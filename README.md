@@ -6,4 +6,4 @@ Not very strong chess engine
 
 ### Strength
 
-1800 ~  2300 Elo
+1600 ~  2100 Elo
