@@ -1,6 +1,6 @@
 # Gecko
 
-Not very storong chess engine
+Not very strong chess engine
 
 ![logo](logo.png)
 
