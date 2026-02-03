@@ -11,13 +11,12 @@ namespace Search {
 	
 	std::atomic<bool> stopped{false};
 	
+	u64 rep_stack[256];
+	i32 game_ply = 0;
+	
+// MVV-LVA values
 	const i32 victim_scores[6] = { 100, 300, 310, 500, 900, 10000 };
 	const i32 attacker_scores[6] = { 1, 2, 3, 4, 5, 6 };
-	
-	struct ScoredMove {
-		Move move;
-		i32 score;
-	};
 	
 	inline Move flip_move(const Move& m) {
 		return Move(m.from ^ 56, m.to ^ 56, m.promo);
@@ -39,6 +38,11 @@ namespace Search {
 		
 		return 0;
 	}
+	
+	struct ScoredMove {
+		Move move;
+		i32 score;
+	};
 	
 	void sort_moves(const Position& pos, Move* moves, i32 count, const Move& tt_move) {
 		ScoredMove scored[MAX_MOVES];
@@ -110,7 +114,19 @@ namespace Search {
 		return alpha;
 	}
 	
-	i32 alpha_beta(Position& pos, i32 depth, i32 alpha, i32 beta, i32 ply, SearchInfo& info, Move* pv, i32& pv_len, bool is_root = false) {
+	bool is_repetition(const Position& pos, i32 ply) {
+		u64 hash = Zobrist::hash(pos);
+		
+		for (i32 j = game_ply + ply - 2; j >= 0; j -= 2) {
+			if (rep_stack[j] == hash) {
+				return true;
+			}
+		}
+		
+		return false;
+	}
+	
+	i32 alpha_beta(Position& pos, i32 depth, i32 alpha, i32 beta, i32 ply, SearchInfo& info, Move* pv, i32& pv_len, bool is_root) {
 		pv_len = 0;
 		
 		if (check_time(info)) return 0;
@@ -121,6 +137,11 @@ namespace Search {
 		
 		info.nodes++;
 		if (ply > info.seldepth) info.seldepth = ply;
+		
+		rep_stack[game_ply + ply] = Zobrist::hash(pos);
+		if (!is_root && is_repetition(pos, ply)) {
+			return 0;
+		}
 		
 		// Mate distance pruning
 		i32 mate_value = MATE_SCORE - ply;
@@ -142,7 +163,6 @@ namespace Search {
 		if (entry) {
 			tt_move = entry->best_move;
 			
-			// Search on root
 			if (!is_root && entry->depth >= depth) {
 				i32 tt_score = entry->score;
 				
@@ -186,7 +206,6 @@ namespace Search {
 					alpha = score;
 					tt_flag = TT_EXACT;
 					
-					// update PV
 					pv[0] = moves[i];
 					for (i32 j = 0; j < child_pv_len; j++) {
 						pv[j + 1] = flip_move(child_pv[j]);
@@ -261,6 +280,7 @@ namespace Search {
 	
 	void init() {
 		stopped.store(false);
+		game_ply = 0;
 	}
 	
 	void stop() {
