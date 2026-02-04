@@ -17,14 +17,20 @@ Currently,v0.06 is ~2200 Elo .
 - Bitboard
 - Flip-Based side-to-move
 
-## Search
+### Search
 
 - Negamax Alpha-Beta
+
 - Iterative Deepening
+
 - Quiescence Search
+
 - Transposition Table (Zobrist Hashing)
+
 - Mate Distance Pruning
+
 - Move Ordering
+  
   + TT Move
   
   + MVV-LVA
