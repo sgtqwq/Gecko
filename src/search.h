@@ -10,6 +10,7 @@ constexpr i32 INF = 30000;
 constexpr i32 MATE_SCORE = 29000;
 constexpr i32 MAX_PLY = 64;
 constexpr i32 MAX_MOVES = 256;
+constexpr i32 MAX_HISTORY = 16384;
 
 struct SearchInfo {
 	u64 nodes;
@@ -36,7 +37,14 @@ struct SearchInfo {
 namespace Search {
 	extern std::atomic<bool> stopped;
 	
+	extern u64 rep_stack[256];
+	extern i32 game_ply;
+	
+	extern i32 history[64][64];
+	extern Move killers[MAX_PLY][2];
+	
 	void init();
+	void clear_tables();
 	Move search(Position& pos, SearchInfo& info, i32 max_depth);
 	void stop();
 }

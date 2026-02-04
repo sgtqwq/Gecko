@@ -6,6 +6,7 @@
 #include <iostream>
 #include <algorithm>
 #include <cstring>
+#include <cmath> // for std::abs
 
 namespace Search {
 	
@@ -14,65 +15,88 @@ namespace Search {
 	u64 rep_stack[256];
 	i32 game_ply = 0;
 	
-// MVV-LVA values
-	const i32 victim_scores[6] = { 100, 300, 310, 500, 900, 10000 };
-	const i32 attacker_scores[6] = { 1, 2, 3, 4, 5, 6 };
+	// History and Killer heuristics
+	i32 history[64][64];
+	Move killers[MAX_PLY][2];
+	constexpr i32 MAX_HISTORY = 2000;
+	
+	// MVV-LVA values [victim][attacker]
+	const i32 MVV_LVA[6][6] = {
+		// attacker: P    N    B    R    Q    K
+		/* P */    { 15,  14,  13,  12,  11,  10 },
+		/* N */    { 25,  24,  23,  22,  21,  20 },
+		/* B */    { 35,  34,  33,  32,  31,  30 },
+		/* R */    { 45,  44,  43,  42,  41,  40 },
+		/* Q */    { 55,  54,  53,  52,  51,  50 },
+		/* K */    { 0,   0,   0,   0,   0,   0  },
+	};
 	
 	inline Move flip_move(const Move& m) {
 		return Move(m.from ^ 56, m.to ^ 56, m.promo);
 	}
 	
-	i32 score_move(const Position& pos, const Move& move, const Move& tt_move) {
-		if (move == tt_move) return 100000;
+	inline void update_history(i32 from, i32 to, i32 bonus) {
+		i32& h = history[from][to];
+		bonus = std::clamp(bonus, -MAX_HISTORY, MAX_HISTORY);
+		h += bonus - h * std::abs(bonus) / MAX_HISTORY;
+	}
+	
+	inline void update_killers(i32 ply, const Move& move) {
+		if (!(killers[ply][0] == move)) {
+			killers[ply][1] = killers[ply][0];
+			killers[ply][0] = move;
+		}
+	}
+	
+	void clear_tables() {
+		std::memset(history, 0, sizeof(history));
+		std::memset(killers, 0, sizeof(killers));
+	}
+	
+	i32 score_move(const Position& pos, const Move& move, const Move& tt_move, i32 ply) {
+		if (move == tt_move) return 1000000;
 		
 		PieceType captured = pos.piece_on(move.to);
 		
 		if (captured != None) {
 			PieceType attacker = pos.piece_on(move.from);
-			return 10000 + victim_scores[captured] * 10 - attacker_scores[attacker];
+			return 100000 + MVV_LVA[captured][attacker];
 		}
 		
 		if (move.promo != None) {
-			return 9000 + move.promo;
+			return 95000 + move.promo;
 		}
 		
-		return 0;
+		if (move == killers[ply][0]) return 90000;
+		if (move == killers[ply][1]) return 80000;
+		
+		return history[move.from][move.to];
 	}
 	
-	struct ScoredMove {
-		Move move;
-		i32 score;
-	};
+	// Just calculate scores, do not sort yet
+	void score_moves(const Position& pos, Move* moves, i32* scores, i32 count, const Move& tt_move, i32 ply) {
+		for (i32 i = 0; i < count; i++) {
+			scores[i] = score_move(pos, moves[i], tt_move, ply);
+		}
+	}
 	
-	void sort_moves(const Position& pos, Move* moves, i32 count, const Move& tt_move) {
-		ScoredMove scored[MAX_MOVES];
-		
-		for (i32 i = 0; i < count; i++) {
-			scored[i].move = moves[i];
-			scored[i].score = score_move(pos, moves[i], tt_move);
-		}
-		
-		for (i32 i = 0; i < count - 1; i++) {
-			i32 best = i;
-			for (i32 j = i + 1; j < count; j++) {
-				if (scored[j].score > scored[best].score) {
-					best = j;
-				}
-			}
-			if (best != i) {
-				std::swap(scored[i], scored[best]);
+	void pick_move(Move* moves, i32* scores, i32 count, i32 current) {
+		i32 best_idx = current;
+		for (i32 i = current + 1; i < count; i++) {
+			if (scores[i] > scores[best_idx]) {
+				best_idx = i;
 			}
 		}
-		
-		for (i32 i = 0; i < count; i++) {
-			moves[i] = scored[i].move;
+		if (best_idx != current) {
+			std::swap(moves[current], moves[best_idx]);
+			std::swap(scores[current], scores[best_idx]);
 		}
 	}
 	
 	bool check_time(SearchInfo& info) {
 		if (stopped.load(std::memory_order_relaxed)) return true;
 		
-		if (!info.infinite && info.nodes % 2048 == 0) {
+		if (!info.infinite && (info.nodes & 2047) == 0) {
 			auto now = std::chrono::steady_clock::now();
 			auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - info.start_time).count();
 			if (elapsed >= info.time_limit) {
@@ -95,11 +119,14 @@ namespace Search {
 		if (stand_pat > alpha) alpha = stand_pat;
 		
 		Move moves[MAX_MOVES];
+		i32 scores[MAX_MOVES];
 		i32 count = generate_moves(pos, moves, true);
 		
-		sort_moves(pos, moves, count, NullMove);
+		score_moves(pos, moves, scores, count, NullMove, ply);
 		
 		for (i32 i = 0; i < count; i++) {
+			pick_move(moves, scores, count, i);
+			
 			Position new_pos = pos;
 			if (!new_pos.make_move(moves[i])) continue;
 			
@@ -176,9 +203,10 @@ namespace Search {
 		}
 		
 		Move moves[MAX_MOVES];
+		i32 scores[MAX_MOVES];
 		i32 count = generate_moves(pos, moves, false);
 		
-		sort_moves(pos, moves, count, tt_move);
+		score_moves(pos, moves, scores, count, tt_move, ply);
 		
 		i32 legal_moves = 0;
 		i32 best_score = -INF;
@@ -188,11 +216,23 @@ namespace Search {
 		Move child_pv[MAX_PLY];
 		i32 child_pv_len;
 		
+		Move quiets_tried[MAX_MOVES];
+		i32 quiets_count = 0;
+		
 		for (i32 i = 0; i < count; i++) {
+			pick_move(moves, scores, count, i);
+			
 			Position new_pos = pos;
 			if (!new_pos.make_move(moves[i])) continue;
 			
 			legal_moves++;
+			
+			bool is_capture = pos.piece_on(moves[i].to) != None;
+			bool is_quiet = !is_capture && moves[i].promo == None;
+			
+			if (is_quiet) {
+				quiets_tried[quiets_count++] = moves[i];
+			}
 			
 			i32 score = -alpha_beta(new_pos, depth - 1, -beta, -alpha, ply + 1, info, child_pv, child_pv_len, false);
 			
@@ -213,6 +253,17 @@ namespace Search {
 					pv_len = child_pv_len + 1;
 					
 					if (score >= beta) {
+						if (is_quiet) {
+							update_killers(ply, moves[i]);
+							
+							i32 bonus = depth * depth;
+							update_history(moves[i].from, moves[i].to, bonus);
+							
+							for (i32 j = 0; j < quiets_count - 1; j++) {
+								update_history(quiets_tried[j].from, quiets_tried[j].to, -bonus);
+							}
+						}
+						
 						i32 store_score = best_score;
 						if (store_score > MATE_SCORE - MAX_PLY) store_score += ply;
 						else if (store_score < -MATE_SCORE + MAX_PLY) store_score -= ply;
@@ -281,6 +332,7 @@ namespace Search {
 	void init() {
 		stopped.store(false);
 		game_ply = 0;
+		clear_tables();
 	}
 	
 	void stop() {
@@ -291,6 +343,8 @@ namespace Search {
 		info.reset();
 		info.start_time = std::chrono::steady_clock::now();
 		stopped.store(false, std::memory_order_relaxed);
+		
+		std::memset(killers, 0, sizeof(killers));
 		
 		Move best_move = NullMove;
 		
