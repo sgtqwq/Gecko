@@ -6,9 +6,9 @@ Gecko, a C++​ chess engine created by sgtqwq, a 14-year-old middle school stud
 
 ## Strength
 
-Gecko isn't very a strong opponent.
+Gecko isn't very a strong chess engine.
 
-Currently,v0.06 is ~2200 Elo .
+Currently,v0.06 is ~2360 Elo .
 
 ## Features
 
@@ -28,6 +28,10 @@ Currently,v0.06 is ~2200 Elo .
 - Transposition Table (Zobrist Hashing)
 
 - Mate Distance Pruning
+
+- Late Move Reduction
+
+- Check Extensions
 
 - Move Ordering
   

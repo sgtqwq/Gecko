@@ -43,6 +43,8 @@ namespace Search {
 	extern i32 history[64][64];
 	extern Move killers[MAX_PLY][2];
 	
+	extern i32 lmr_table[MAX_PLY][MAX_MOVES];
+	
 	void init();
 	void clear_tables();
 	Move search(Position& pos, SearchInfo& info, i32 max_depth);

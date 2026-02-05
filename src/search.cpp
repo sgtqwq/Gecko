@@ -6,7 +6,7 @@
 #include <iostream>
 #include <algorithm>
 #include <cstring>
-#include <cmath> // for std::abs
+#include <cmath>
 
 namespace Search {
 	
@@ -15,12 +15,12 @@ namespace Search {
 	u64 rep_stack[256];
 	i32 game_ply = 0;
 	
-	// History and Killer heuristics
 	i32 history[64][64];
 	Move killers[MAX_PLY][2];
+	i32 lmr_table[MAX_PLY][MAX_MOVES];
+	
 	constexpr i32 MAX_HISTORY = 2000;
 	
-	// MVV-LVA values [victim][attacker]
 	const i32 MVV_LVA[6][6] = {
 		// attacker: P    N    B    R    Q    K
 		/* P */    { 15,  14,  13,  12,  11,  10 },
@@ -30,6 +30,20 @@ namespace Search {
 		/* Q */    { 55,  54,  53,  52,  51,  50 },
 		/* K */    { 0,   0,   0,   0,   0,   0  },
 	};
+	
+	void init_lmr_table() {
+		for (i32 depth = 0; depth < MAX_PLY; depth++) {
+			for (i32 moves = 0; moves < MAX_MOVES; moves++) {
+				if (depth == 0 || moves == 0) {
+					lmr_table[depth][moves] = 0;
+				} else {
+					lmr_table[depth][moves] = static_cast<i32>(
+						0.5 + std::log(depth) * std::log(moves) * 0.5
+						);
+				}
+			}
+		}
+	}
 	
 	inline Move flip_move(const Move& m) {
 		return Move(m.from ^ 56, m.to ^ 56, m.promo);
@@ -73,7 +87,6 @@ namespace Search {
 		return history[move.from][move.to];
 	}
 	
-	// Just calculate scores, do not sort yet
 	void score_moves(const Position& pos, Move* moves, i32* scores, i32 count, const Move& tt_move, i32 ply) {
 		for (i32 i = 0; i < count; i++) {
 			scores[i] = score_move(pos, moves[i], tt_move, ply);
@@ -170,6 +183,13 @@ namespace Search {
 			return 0;
 		}
 		
+		bool pv_node = (beta - alpha) > 1;
+		i32 king_sq = BB::lsb(pos.colour[0] & pos.pieces[King]);
+		bool in_check = pos.is_attacked(king_sq);
+		
+		// Check extension [RESTORED]
+		if (in_check) depth++;
+		
 		// Mate distance pruning
 		i32 mate_value = MATE_SCORE - ply;
 		if (mate_value < beta) {
@@ -202,6 +222,10 @@ namespace Search {
 			}
 		}
 		
+		// Static eval for improving heuristic
+		i32 static_eval = in_check ? -INF : Eval::evaluate(pos);
+		bool improving = !in_check && ply >= 2 && static_eval > alpha;
+		
 		Move moves[MAX_MOVES];
 		i32 scores[MAX_MOVES];
 		i32 count = generate_moves(pos, moves, false);
@@ -228,13 +252,48 @@ namespace Search {
 			legal_moves++;
 			
 			bool is_capture = pos.piece_on(moves[i].to) != None;
-			bool is_quiet = !is_capture && moves[i].promo == None;
+			bool is_promo = moves[i].promo != None;
+			bool is_quiet = !is_capture && !is_promo;
+			bool is_killer = (moves[i] == killers[ply][0]) || (moves[i] == killers[ply][1]);
 			
 			if (is_quiet) {
 				quiets_tried[quiets_count++] = moves[i];
 			}
 			
-			i32 score = -alpha_beta(new_pos, depth - 1, -beta, -alpha, ply + 1, info, child_pv, child_pv_len, false);
+			i32 score;
+			i32 new_depth = depth - 1;
+			
+			// ============================================
+			// PVS DISABLED, LMR RESTORED
+			// ============================================
+			
+			if (legal_moves == 1) {
+				// First move: full window
+				score = -alpha_beta(new_pos, new_depth, -beta, -alpha, ply + 1, info, child_pv, child_pv_len, false);
+			} else {
+				i32 reduction = 0;
+				
+				// [LMR RESTORED]
+				if (depth >= 3 && is_quiet && !in_check) {
+					reduction = lmr_table[std::min(depth, MAX_PLY - 1)][std::min(legal_moves, MAX_MOVES - 1)];
+					
+					if (pv_node) reduction--;
+					if (improving) reduction--;
+					if (is_killer) reduction--;
+					
+					reduction -= history[moves[i].from][moves[i].to] / 4096;
+					reduction = std::clamp(reduction, 0, new_depth - 1);
+				}
+				// Searching with full window (-beta, -alpha) instead of null window (-alpha-1, -alpha)
+				score = -alpha_beta(new_pos, new_depth - reduction, -beta, -alpha, ply + 1, info, child_pv, child_pv_len, false);
+				
+				// LMR Re-search (Verification)
+				// If we found a good move with reduced depth, verify with full depth (still full window)
+				if (score > alpha && reduction > 0) {
+					score = -alpha_beta(new_pos, new_depth, -beta, -alpha, ply + 1, info, child_pv, child_pv_len, false);
+				}
+				
+			}
 			
 			if (stopped.load(std::memory_order_relaxed)) return 0;
 			
@@ -277,8 +336,7 @@ namespace Search {
 		
 		// Checkmate or stalemate
 		if (legal_moves == 0) {
-			i32 king_sq = BB::lsb(pos.colour[0] & pos.pieces[King]);
-			if (pos.is_attacked(king_sq)) {
+			if (in_check) {
 				return -MATE_SCORE + ply;
 			} else {
 				return 0;
@@ -332,6 +390,7 @@ namespace Search {
 	void init() {
 		stopped.store(false);
 		game_ply = 0;
+		init_lmr_table();
 		clear_tables();
 	}
 	
