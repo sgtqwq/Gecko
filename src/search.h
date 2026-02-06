@@ -37,7 +37,7 @@ struct SearchInfo {
 namespace Search {
 	extern std::atomic<bool> stopped;
 	
-	extern u64 rep_stack[256];
+	extern u64 rep_stack[1024];
 	extern i32 game_ply;
 	
 	extern i32 history[64][64];
