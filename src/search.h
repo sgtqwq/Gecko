@@ -9,7 +9,7 @@
 constexpr i32 INF = 30000;
 constexpr i32 MATE_SCORE = 29000;
 constexpr i32 MAX_PLY = 64;
-constexpr i32 MAX_MOVES = 256;
+constexpr i32 MAX_MOVES = 1024;
 constexpr i32 MAX_HISTORY = 16384;
 
 struct SearchInfo {
