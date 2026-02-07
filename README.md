@@ -19,7 +19,7 @@ Currently,v0.06 is ~2360 Elo .
 
 ### Search
 
-- Negamax Alpha-Beta
+- Principal Variation Search
 
 - Iterative Deepening
 
