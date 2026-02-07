@@ -187,7 +187,7 @@ namespace Search {
 		i32 king_sq = BB::lsb(pos.colour[0] & pos.pieces[King]);
 		bool in_check = pos.is_attacked(king_sq);
 		
-		// Check extension [RESTORED]
+		// Check extension
 		if (in_check) depth++;
 		
 		// Mate distance pruning
@@ -264,16 +264,16 @@ namespace Search {
 			i32 new_depth = depth - 1;
 			
 			// ============================================
-			// PVS DISABLED, LMR RESTORED
+			// PVS (Principal Variation Search)
 			// ============================================
 			
 			if (legal_moves == 1) {
-				// First move: full window
+				// First move: full window search (this is expected to be the best move)
 				score = -alpha_beta(new_pos, new_depth, -beta, -alpha, ply + 1, info, child_pv, child_pv_len, false);
 			} else {
+				// Late Move Reduction
 				i32 reduction = 0;
 				
-				// [LMR RESTORED]
 				if (depth >= 3 && is_quiet && !in_check) {
 					reduction = lmr_table[std::min(depth, MAX_PLY - 1)][std::min(legal_moves, MAX_MOVES - 1)];
 					
@@ -284,15 +284,25 @@ namespace Search {
 					reduction -= history[moves[i].from][moves[i].to] / 4096;
 					reduction = std::clamp(reduction, 0, new_depth - 1);
 				}
-				// Searching with full window (-beta, -alpha) instead of null window (-alpha-1, -alpha)
-				score = -alpha_beta(new_pos, new_depth - reduction, -beta, -alpha, ply + 1, info, child_pv, child_pv_len, false);
 				
-				// LMR Re-search (Verification)
-				// If we found a good move with reduced depth, verify with full depth (still full window)
-				if (score > alpha && reduction > 0) {
+				// PVS(50 Elo)
+				score = -alpha_beta(new_pos, new_depth - reduction, -alpha - 1, -alpha, ply + 1, info, child_pv, child_pv_len, false);
+				
+				// If null window search fails high (score > alpha), we need to re-search
+				if (score > alpha && score < beta) {
+					// Re-search with full window
 					score = -alpha_beta(new_pos, new_depth, -beta, -alpha, ply + 1, info, child_pv, child_pv_len, false);
 				}
-				
+				// Ifused LMR and it failed high on the null window, verify with full depth
+				else if (score > alpha && reduction > 0) {
+					// First verify with full depth but null window
+					score = -alpha_beta(new_pos, new_depth, -alpha - 1, -alpha, ply + 1, info, child_pv, child_pv_len, false);
+					
+					// If still fails high, do full window search
+					if (score > alpha && score < beta) {
+						score = -alpha_beta(new_pos, new_depth, -beta, -alpha, ply + 1, info, child_pv, child_pv_len, false);
+					}
+				}
 			}
 			
 			if (stopped.load(std::memory_order_relaxed)) return 0;
