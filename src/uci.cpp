@@ -32,9 +32,13 @@ namespace UCI {
 			pos.set_fen(fen);
 		}
 		
+		Search::game_ply = 0;
 		// Parse moves
 		if (token == "moves") {
 			while (iss >> token) {
+				Search::rep_stack[Search::game_ply] = Zobrist::hash(pos);
+				Search::game_ply++;
+				
 				Move moves[256];
 				int count = generate_moves(pos, moves, false);
 				
