@@ -223,7 +223,41 @@ namespace Search {
 		// Static eval for improving heuristic
 		i32 static_eval = in_check ? -INF : Eval::evaluate(pos);
 		bool improving = !in_check && ply >= 2 && static_eval > alpha;
-		
+		// =====================================================
+// Null Move Pruning (83Elo)
+// =====================================================
+		if (!pv_node
+			&& !in_check
+			&& depth >= 3
+			&& static_eval >= beta
+			&& beta > -MATE_SCORE + MAX_PLY  
+			) {
+			if (1) {
+				Position null_pos = pos;
+				null_pos.ep = 0;      
+				null_pos.flip();     
+				i32 R = (static_eval - beta + depth * 30 + 480) / 105;
+				Move null_pv[1];      
+				i32 null_pv_len = 0;
+				i32 null_score = -alpha_beta(
+					null_pos,
+					depth - R,        
+					-beta, -beta + 1,
+					ply + 1,
+					info,
+					null_pv, null_pv_len,
+					false
+					);
+				
+				if (stopped.load(std::memory_order_relaxed)) return 0;
+				if (null_score >= beta) {
+					if (null_score >= MATE_SCORE - MAX_PLY) {
+						return beta;
+					}
+					return null_score;
+				}
+			}
+		}
 		Move moves[MAX_MOVES];
 		i32 scores[MAX_MOVES];
 		i32 count = generate_moves(pos, moves, false);
