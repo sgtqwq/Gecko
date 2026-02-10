@@ -232,7 +232,9 @@ namespace Search {
 			&& static_eval >= beta+20
 			&& beta > -MATE_SCORE + MAX_PLY  
 			) {
-			if (1) {
+			u64 non_pawn = pos.colour[0] & ~pos.pieces[Pawn] & ~pos.pieces[King];
+			
+			if (non_pawn) {
 				Position null_pos = pos;
 				null_pos.ep = 0;      
 				null_pos.flip();     
