@@ -140,7 +140,7 @@ namespace UCI {
 	}
 	
 	void loop() {
-		std::cout << "Gecko 0.09.5 by Bingwen Yang(sgtqwq)" << std::endl;
+		std::cout << "Gecko 0.11 by Bingwen Yang(sgtqwq)" << std::endl;
 		
 		std::string line;
 		while (std::getline(std::cin, line)) {
@@ -149,7 +149,7 @@ namespace UCI {
 			iss >> cmd;
 			
 			if (cmd == "uci") {
-				std::cout << "id name Gecko 0.09.5\n";
+				std::cout << "id name Gecko 0.11\n";
 				std::cout << "id author Bingwen Yang(sgtqwq)\n";
 				std::cout << "option name Hash type spin default 16 min 1 max 4096\n";
 				std::cout << "option name Clear Hash type button\n";

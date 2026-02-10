@@ -224,12 +224,12 @@ namespace Search {
 		i32 static_eval = in_check ? -INF : Eval::evaluate(pos);
 		bool improving = !in_check && ply >= 2 && static_eval > alpha;
 		// =====================================================
-// Null Move Pruning (83Elo)
+// Null Move Pruning 
 // =====================================================
 		if (!pv_node
 			&& !in_check
 			&& depth >= 3
-			&& static_eval >= beta
+			&& static_eval >= beta+20
 			&& beta > -MATE_SCORE + MAX_PLY  
 			) {
 			if (1) {
