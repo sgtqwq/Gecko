@@ -450,6 +450,8 @@ namespace Search {
 		std::memset(killers, 0, sizeof(killers));
 		
 		Move best_move = NullMove;
+//		move_stack[0] = NullMove;
+		i32 last_score = 0;
 		
 		for (i32 depth = 1; depth <= max_depth; depth++) {
 			info.depth = depth;
@@ -458,7 +460,30 @@ namespace Search {
 			Move pv[MAX_PLY];
 			i32 pv_len = 0;
 			
-			i32 score = alpha_beta(pos, depth, -INF, INF, 0, info, pv, pv_len, true);
+			i32 score;
+			// Aspiration windows around the previous iteration's score.
+			if (depth >= 4) {
+				i32 delta = 18;
+				i32 a = last_score - delta;
+				i32 b = last_score + delta;
+				while (true) {
+					score = alpha_beta(pos, depth, a, b, 0, info, pv, pv_len, true);
+					if (stopped.load(std::memory_order_relaxed)) break;
+					if (score <= a) {
+						a -= delta;
+						delta = std::min(delta * 2, 2000);
+						continue;
+					}
+					if (score >= b) {
+						b += delta;
+						delta = std::min(delta * 2, 2000);
+						continue;
+					}
+					break;
+				}
+			} else {
+				score = alpha_beta(pos, depth, -INF, INF, 0, info, pv, pv_len, true);
+			}
 			
 			if (stopped.load(std::memory_order_relaxed) && depth > 1) break;
 			
@@ -469,6 +494,7 @@ namespace Search {
 			}
 			
 			print_info(info, score, pos);
+			last_score = score;
 			
 			if (score > MATE_SCORE - MAX_PLY || score < -MATE_SCORE + MAX_PLY) {
 				break;
@@ -478,4 +504,4 @@ namespace Search {
 		return best_move;
 	}
 	
-} // namespace Search
+} // namespace Search 
