@@ -8,7 +8,7 @@ Gecko, a C++​ chess engine created by sgtqwq, a 14-year-old middle school stud
 
 Gecko isn't very a strong chess engine.
 
-Currently,v0.10 is ~2445+-100 Elo .
+Currently,v0.13 is ~2500+-100 Elo .
 
 ## Features
 
