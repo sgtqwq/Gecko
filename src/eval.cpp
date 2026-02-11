@@ -4,6 +4,8 @@
 #include <algorithm>
 
 namespace Eval {
+
+	static bool g_ready = false;
 	
 	const i32 mg_value[6] = { 82, 337, 365, 477, 1025, 0 };
 	const i32 eg_value[6] = { 94, 281, 297, 512, 936, 0 };
@@ -152,53 +154,65 @@ namespace Eval {
 	
 	const i32 phase_inc[6] = { 0, 1, 1, 2, 4, 0 };
 	
-	i32 mg_table[6][64];
-	i32 eg_table[6][64];
+	Score psqt_table[6][64];
 	
 	void init() {
 		for (int pt = 0; pt < 6; pt++) {
 			for (int sq = 0; sq < 64; sq++) {
 				// Tables are stored with A8=0, we use A1=0, so flip
 				i32 table_sq = sq ^ 56;
-				mg_table[pt][sq] = mg_value[pt] + mg_pesto[pt][table_sq];
-				eg_table[pt][sq] = eg_value[pt] + eg_pesto[pt][table_sq];
+				psqt_table[pt][sq] = S(
+					mg_value[pt] + mg_pesto[pt][table_sq],
+					eg_value[pt] + eg_pesto[pt][table_sq]
+				);
 			}
 		}
+		g_ready = true;
+	}
+
+	bool is_ready() {
+		return g_ready;
+	}
+
+	const Score& psqt(PieceType pt, i32 sq) {
+		return psqt_table[pt][sq];
+	}
+
+	const i32* phase_increments() {
+		return phase_inc;
 	}
 	
 	i32 evaluate(const Position& pos) {
-		i32 mg[2] = {0, 0};
-		i32 eg[2] = {0, 0};
-		i32 gamePhase = 0;
-		
-		for (int pt = Pawn; pt <= King; pt++) {
-			// Our pieces (colour[0])
-			u64 our = pos.colour[0] & pos.pieces[pt];
-			while (our) {
-				i32 sq = BB::pop_lsb(our);
-				mg[0] += mg_table[pt][sq];
-				eg[0] += eg_table[pt][sq];
-				gamePhase += phase_inc[pt];
-			}
-			
-			// Enemy pieces (colour[1]) - flip square for their perspective
-			u64 their = pos.colour[1] & pos.pieces[pt];
-			while (their) {
-				i32 sq = BB::pop_lsb(their);
-				i32 flipped_sq = sq ^ 56;
-				mg[1] += mg_table[pt][flipped_sq];
-				eg[1] += eg_table[pt][flipped_sq];
-				gamePhase += phase_inc[pt];
+		// Fast path: use incremental PSQT & phase stored inside Position.
+		// Fallback path: recompute if the position was created before Eval::init.
+		Score s0, s1;
+		i32 phase = 0;
+		if (pos.eval_ready) {
+			s0 = pos.psqt_sum[0];
+			s1 = pos.psqt_sum[1];
+			phase = pos.gamePhase;
+		} else {
+			for (int pt = Pawn; pt <= King; pt++) {
+				u64 our = pos.colour[0] & pos.pieces[pt];
+				while (our) {
+					i32 sq = BB::pop_lsb(our);
+					s0 += psqt_table[pt][sq];
+					phase += phase_inc[pt];
+				}
+				u64 their = pos.colour[1] & pos.pieces[pt];
+				while (their) {
+					i32 sq = BB::pop_lsb(their);
+					i32 flipped_sq = sq ^ 56;
+					s1 += psqt_table[pt][flipped_sq];
+					phase += phase_inc[pt];
+				}
 			}
 		}
-		
-		i32 mgScore = mg[0] - mg[1];
-		i32 egScore = eg[0] - eg[1];
-		
-		i32 mgPhase = std::min(gamePhase, 24);
+
+		Score diff = s0 - s1;
+		i32 mgPhase = std::min(phase, 24);
 		i32 egPhase = 24 - mgPhase;
-		
-		return (mgScore * mgPhase + egScore * egPhase) / 24;
+		return (diff.mg * mgPhase + diff.eg * egPhase) / 24;
 	}
 	
 } // namespace Eval

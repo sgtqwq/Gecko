@@ -8,11 +8,17 @@
 struct Position {
 	u64 colour[2];
 	u64 pieces[6];
+	// Incremental evaluation (PSQT sums + game phase) for fast Eval::evaluate().
+	Score psqt_sum[2];
+	i32 gamePhase;
+	bool eval_ready;
+
 	bool castling[4];
 	u64 ep;
 	bool flipped;
 	Position();
 	void set_fen(const std::string& fen);
+	void refresh_eval();
 	void flip();
 	PieceType piece_on(i32 sq) const;
 	u64 all_pieces() const { return colour[0] | colour[1]; }

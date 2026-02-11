@@ -11,6 +11,40 @@ using u64 = uint64_t;
 using i32 = int32_t;
 using i16 = int16_t;
 using i64 = int64_t;
+
+// ------------------------------------------------------------
+// Tapered-eval score (midgame/endgame)
+// ------------------------------------------------------------
+// Many modern engines model evaluation as a blend of midgame (MG) and
+// endgame (EG) scores. We keep MG/EG together in a small struct and
+// use the S(mg,eg) macro for convenient construction.
+
+struct Score {
+    i32 mg;
+    i32 eg;
+
+    constexpr Score(i32 mg_ = 0, i32 eg_ = 0) : mg(mg_), eg(eg_) {}
+
+    constexpr Score& operator+=(const Score& other) {
+        mg += other.mg;
+        eg += other.eg;
+        return *this;
+    }
+
+    constexpr Score& operator-=(const Score& other) {
+        mg -= other.mg;
+        eg -= other.eg;
+        return *this;
+    }
+};
+
+constexpr inline Score operator+(Score a, const Score& b) { return a += b; }
+constexpr inline Score operator-(Score a, const Score& b) { return a -= b; }
+constexpr inline Score operator*(const Score& a, i32 k) { return Score(a.mg * k, a.eg * k); }
+constexpr inline Score operator*(i32 k, const Score& a) { return a * k; }
+
+// Modern convenience macro
+#define S(mg, eg) Score((mg), (eg))
 enum PieceType {
 	Pawn,
 	Knight, 

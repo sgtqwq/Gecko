@@ -1,4 +1,5 @@
 #include "position.h"
+#include "eval.h"
 #include <iostream>
 #include <sstream>
 
@@ -14,6 +15,14 @@ Position::Position() {
 	castling[0] = castling[1] = castling[2] = castling[3] = true;
 	ep = 0;
 	flipped = false;
+	psqt_sum[0] = psqt_sum[1] = Score();
+	gamePhase = 0;
+	eval_ready = false;
+	// This constructor can run at static init (before main), so we only
+	// compute eval state if Eval tables are already initialized.
+	if (Eval::is_ready()) {
+		refresh_eval();
+	}
 }
 
 void Position::set_fen(const std::string& fen) {
@@ -22,6 +31,9 @@ void Position::set_fen(const std::string& fen) {
 	for (int i = 0; i < 4; i++) castling[i] = false;
 	ep = 0;
 	flipped = false;
+	psqt_sum[0] = psqt_sum[1] = Score();
+	gamePhase = 0;
+	eval_ready = false;
 	
 	std::istringstream ss(fen);
 	std::string board_str, side_str, castle_str, ep_str;
@@ -74,6 +86,37 @@ void Position::set_fen(const std::string& fen) {
 	if (black_to_move) {
 		flip();
 	}
+	refresh_eval();
+}
+
+void Position::refresh_eval() {
+	psqt_sum[0] = psqt_sum[1] = Score();
+	gamePhase = 0;
+
+	if (!Eval::is_ready()) {
+		eval_ready = false;
+		return;
+	}
+
+	const i32* ph = Eval::phase_increments();
+	for (int pt = Pawn; pt <= King; pt++) {
+		u64 our = colour[0] & pieces[pt];
+		while (our) {
+			i32 sq = BB::pop_lsb(our);
+			psqt_sum[0] += Eval::psqt(static_cast<PieceType>(pt), sq);
+			gamePhase += ph[pt];
+		}
+
+		u64 their = colour[1] & pieces[pt];
+		while (their) {
+			i32 sq = BB::pop_lsb(their);
+			i32 flipped_sq = sq ^ 56;
+			psqt_sum[1] += Eval::psqt(static_cast<PieceType>(pt), flipped_sq);
+			gamePhase += ph[pt];
+		}
+	}
+
+	eval_ready = true;
 }
 
 void Position::flip() {
@@ -89,6 +132,11 @@ void Position::flip() {
 	ep = BB::flip(ep);
 	std::swap(castling[0], castling[2]);
 	std::swap(castling[1], castling[3]);
+	// Incremental eval update: see Eval::evaluate() logic.
+	// Because we store psqt_sum[0] as "our" sum and psqt_sum[1] as
+	// "their" sum (with their squares already mirrored), a flip is
+	// just a swap.
+	std::swap(psqt_sum[0], psqt_sum[1]);
 }
 
 PieceType Position::piece_on(i32 sq) const {
@@ -121,12 +169,60 @@ bool Position::is_attacked(i32 sq, bool by_enemy) const {
 }
 
 bool Position::make_move(const Move& move) {
+	if (!eval_ready) refresh_eval();
+
 	u64 from_bb = BB::square_bb(move.from);
 	u64 to_bb = BB::square_bb(move.to);
 	u64 move_mask = from_bb | to_bb;
 	
 	PieceType piece = piece_on(move.from);
 	PieceType captured = piece_on(move.to);
+
+	// ------------------------------------------------------------
+	// Incremental eval update (before mutating bitboards)
+	// psqt_sum[0]: our pieces use actual square
+	// psqt_sum[1]: enemy pieces use mirrored square
+	// ------------------------------------------------------------
+	if (eval_ready && Eval::is_ready()) {
+		const i32* ph = Eval::phase_increments();
+
+		// Remove moving piece from its origin square
+		psqt_sum[0] -= Eval::psqt(piece, move.from);
+
+		// Captures (normal capture on destination)
+		if (captured != None) {
+			psqt_sum[1] -= Eval::psqt(captured, move.to ^ 56);
+			gamePhase -= ph[captured];
+		}
+
+		// En-passant capture
+		if (piece == Pawn && to_bb == ep) {
+			i32 cap_sq = move.to - 8;
+			psqt_sum[1] -= Eval::psqt(Pawn, cap_sq ^ 56);
+			// phase_inc[Pawn] is 0, so no phase change
+		}
+
+		// Castling rook move (king move by 2 squares)
+		if (piece == King) {
+			if (move.to - move.from == 2) {
+				// O-O: rook H1 -> F1
+				psqt_sum[0] -= Eval::psqt(Rook, H1);
+				psqt_sum[0] += Eval::psqt(Rook, F1);
+			} else if (move.from - move.to == 2) {
+				// O-O-O: rook A1 -> D1
+				psqt_sum[0] -= Eval::psqt(Rook, A1);
+				psqt_sum[0] += Eval::psqt(Rook, D1);
+			}
+		}
+
+		// Add piece on destination square (promotion handled below)
+		if (piece == Pawn && rank_of(move.to) == 7 && move.promo != None) {
+			psqt_sum[0] += Eval::psqt(static_cast<PieceType>(move.promo), move.to);
+			gamePhase += ph[move.promo];
+		} else {
+			psqt_sum[0] += Eval::psqt(piece, move.to);
+		}
+	}
 
 	colour[0] ^= move_mask;
 	pieces[piece] ^= move_mask;
