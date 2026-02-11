@@ -19,6 +19,8 @@ namespace Search {
 	Move killers[MAX_PLY][2];
 	i32 lmr_table[MAX_PLY][MAX_MOVES];
 	
+	i32 eval_stack[MAX_PLY + 4];
+	
 	constexpr i32 MAX_HISTORY = 2000;
 	
 	const i32 MVV_LVA[6][6] = {
@@ -65,6 +67,7 @@ namespace Search {
 	void clear_tables() {
 		std::memset(history, 0, sizeof(history));
 		std::memset(killers, 0, sizeof(killers));
+		std::memset(eval_stack, 0, sizeof(eval_stack));
 	}
 	
 	i32 score_move(const Position& pos, const Move& move, const Move& tt_move, i32 ply) {
@@ -222,7 +225,19 @@ namespace Search {
 		
 		// Static eval for improving heuristic
 		i32 static_eval = in_check ? -INF : Eval::evaluate(pos);
-		bool improving = !in_check && ply >= 2 && static_eval > alpha;
+		eval_stack[ply] = static_eval;
+		bool improving = !in_check && ply >= 2 && static_eval > eval_stack[ply - 2];
+		
+		// =====================================================
+		// Reverse Futility Pruning (Static Null Move Pruning)
+		// =====================================================
+		if (!pv_node
+			&& !in_check
+			&& depth < 8
+			&& static_eval < MATE_SCORE - MAX_PLY
+			&& static_eval >= beta + 70 * depth - 70 * improving) {
+			return (static_eval + beta) / 2;
+		}
 		// =====================================================
 // Null Move Pruning 
 // =====================================================
@@ -450,7 +465,6 @@ namespace Search {
 		std::memset(killers, 0, sizeof(killers));
 		
 		Move best_move = NullMove;
-//		move_stack[0] = NullMove;
 		i32 last_score = 0;
 		
 		for (i32 depth = 1; depth <= max_depth; depth++) {
