@@ -304,7 +304,17 @@ namespace Search {
 			bool is_promo = moves[i].promo != None;
 			bool is_quiet = !is_capture && !is_promo;
 			bool is_killer = (moves[i] == killers[ply][0]) || (moves[i] == killers[ply][1]);
-			
+			if (!is_root
+				&& !pv_node
+				&& !in_check
+				&& is_quiet) {
+				
+				i32 lmp_threshold = (depth * depth + 10) >> (2 - improving);
+				
+				if (quiets_count >= lmp_threshold) {
+					break;
+				}
+			}
 			if (is_quiet) {
 				quiets_tried[quiets_count++] = moves[i];
 			}
