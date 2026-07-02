@@ -44,20 +44,15 @@ namespace Search {
 		
 		if (ply >= MAX_PLY) return Eval::evaluate(pos);
 		
-		const bool check = in_check(pos);
-		
-		i32 stand_pat = 0;
-		if (!check) {
-			stand_pat = Eval::evaluate(pos);
-			if (stand_pat >= beta) return stand_pat;
-			if (stand_pat > alpha) alpha = stand_pat;
-		}
+		i32 stand_pat = Eval::evaluate(pos);
+		if (stand_pat >= beta) return stand_pat;
+		if (stand_pat > alpha) alpha = stand_pat;
 		
 		Move moves[MAX_MOVES];
-		const i32 count = generate_moves(pos, moves, !check);
+		const i32 count = generate_moves(pos, moves, true);
 		
 		i32 legal = 0;
-		i32 best  = check ? (-MATE_SCORE + ply) : stand_pat;
+		i32 best = stand_pat;
 		
 		for (i32 i = 0; i < count; ++i) {
 			if (stopped.load(std::memory_order_relaxed)) break;
