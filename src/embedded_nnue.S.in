@@ -1,0 +1,12 @@
+.section .rodata
+    .global ob_nnue_data
+    .global ob_nnue_end
+
+ob_nnue_data:
+    .incbin "@EVALFILE@"
+
+ob_nnue_end:
+
+#if defined(__linux__)
+    .section .note.GNU-stack,"",@progbits
+#endif
