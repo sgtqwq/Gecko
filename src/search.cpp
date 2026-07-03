@@ -11,6 +11,51 @@ namespace Search {
 	u64 rep_stack[1024]{};
 	i32 game_ply = 0;
 	
+	// PNBRQKX (X = no piece)
+	constexpr i32 MVV_LVA[7][7] = {
+		{15, 14, 13, 12, 11, 10, 0}, // Taking a pawn
+		{25, 24, 23, 22, 21, 20, 0}, // Taking a knight
+		{35, 34, 33, 32, 31, 30, 0}, // Taking a bishop
+		{45, 44, 43, 42, 41, 40, 0}, // Taking a rook
+		{55, 54, 53, 52, 51, 50, 0}, // Taking a queen
+		{0, 0, 0, 0, 0, 0, 0},       // Taking a king (should never happen)
+		{0, 0, 0, 0, 0, 0, 0}        // No piece
+	};
+	
+	static inline i32 mvv_lva_score(const Position& pos, const Move& move) {
+		PieceType attacker = pos.piece_on(move.from);
+		PieceType victim   = pos.piece_on(move.to);
+		
+		// Handle en passant: the "to" square is empty, but it's still a capture.
+		if (victim == None && attacker == Pawn && pos.ep && BB::square_bb(move.to) == pos.ep) {
+			victim = Pawn;
+		}
+		
+		return MVV_LVA[victim][attacker];
+	}
+	
+	static void order_moves(const Position& pos, Move* moves, i32 count) {
+		i32 scores[MAX_MOVES];
+		for (i32 i = 0; i < count; ++i) {
+			scores[i] = mvv_lva_score(pos, moves[i]);
+		}
+		
+		// Insertion sort (descending). Move lists are short, so this is
+		// faster and simpler than std::sort here.
+		for (i32 i = 1; i < count; ++i) {
+			const Move m = moves[i];
+			const i32  s = scores[i];
+			i32 j = i - 1;
+			while (j >= 0 && scores[j] < s) {
+				moves[j + 1]  = moves[j];
+				scores[j + 1] = scores[j];
+				--j;
+			}
+			moves[j + 1]  = m;
+			scores[j + 1] = s;
+		}
+	}
+	
 	void init() {
 		stopped.store(false, std::memory_order_relaxed);
 	}
@@ -50,6 +95,7 @@ namespace Search {
 		
 		Move moves[MAX_MOVES];
 		const i32 count = generate_moves(pos, moves, true);
+		order_moves(pos, moves, count);
 		
 		i32 legal = 0;
 		i32 best = stand_pat;
@@ -84,6 +130,8 @@ namespace Search {
 		
 		Move moves[MAX_MOVES];
 		const i32 count = generate_moves(pos, moves, false);
+		order_moves(pos, moves, count);
+		
 		i32 legal = 0, best = -INF;
 		
 		for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {
@@ -124,6 +172,8 @@ namespace Search {
 		for (i32 depth = 1; depth <= max_depth; ++depth) {
 			Move moves[MAX_MOVES];
 			const i32 count = generate_moves(pos, moves, false);
+			order_moves(pos, moves, count);
+			
 			i32 alpha = -INF, beta = INF;
 			Move cur_best  = NullMove;
 			i32  cur_score = -INF;
@@ -175,4 +225,3 @@ namespace Search {
 	}
 	
 } // namespace Search
-
