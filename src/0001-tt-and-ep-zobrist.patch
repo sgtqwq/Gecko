@@ -1,0 +1,102 @@
+--- a/src/search.cpp
++++ b/src/search.cpp
+@@ -33,11 +33,23 @@
+ 		
+ 		return MVV_LVA[victim][attacker];
+ 	}
++
++	static inline i32 score_to_tt(i32 score, i32 ply) {
++		if (score > MATE_SCORE - MAX_PLY) return score + ply;
++		if (score < -MATE_SCORE + MAX_PLY) return score - ply;
++		return score;
++	}
++
++	static inline i32 score_from_tt(i32 score, i32 ply) {
++		if (score > MATE_SCORE - MAX_PLY) return score - ply;
++		if (score < -MATE_SCORE + MAX_PLY) return score + ply;
++		return score;
++	}
+ 	
+-	static void order_moves(const Position& pos, Move* moves, i32 count) {
++	static void order_moves(const Position& pos, Move* moves, i32 count, Move tt_move = NullMove) {
+ 		i32 scores[MAX_MOVES];
+ 		for (i32 i = 0; i < count; ++i) {
+-			scores[i] = mvv_lva_score(pos, moves[i]);
++			scores[i] = (moves[i] == tt_move) ? 1000000 : mvv_lva_score(pos, moves[i]);
+ 		}
+ 		
+ 		// Insertion sort (descending). Move lists are short, so this is
+@@ -126,13 +138,28 @@
+ 		
+ 		if (depth <= 0) return quiescence(pos, info, ply, alpha, beta);
+ 		
+-		rep_stack[game_ply + ply] = Zobrist::hash(pos);
++		const i32 alpha_orig = alpha;
++		const u64 key = Zobrist::hash(pos);
++		Move tt_move = NullMove;
++		
++		if (TTEntry* entry = tt.probe(key)) {
++			tt_move = entry->best_move;
++			if (entry->depth >= depth) {
++				const i32 tt_score = score_from_tt(entry->score, ply);
++				if (entry->flag == TT_EXACT) return tt_score;
++				if (entry->flag == TT_ALPHA && tt_score <= alpha) return tt_score;
++				if (entry->flag == TT_BETA  && tt_score >= beta)  return tt_score;
++			}
++		}
++		
++		rep_stack[game_ply + ply] = key;
+ 		
+ 		Move moves[MAX_MOVES];
+ 		const i32 count = generate_moves(pos, moves, false);
+-		order_moves(pos, moves, count);
++		order_moves(pos, moves, count, tt_move);
+ 		
+ 		i32 legal = 0, best = -INF;
++		Move best_move = NullMove;
+ 		
+ 		for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {
+ 			Position next = pos;
+@@ -146,7 +173,10 @@
+ 			}
+ 			
+ 			const i32 score = -negamax(next, info, depth - 1, ply + 1, -beta, -alpha);
+-			if (score > best) best = score;
++			if (score > best) {
++				best = score;
++				best_move = moves[i];
++			}
+ 			if (best > alpha) alpha = best;
+ 			if (alpha >= beta) break;
+ 		}
+@@ -156,6 +186,13 @@
+ 			return pos.is_attacked(king_sq) ? -MATE_SCORE + ply : 0;
+ 		}
+ 		
++		if (!stopped.load(std::memory_order_relaxed)) {
++			u8 flag = TT_EXACT;
++			if (best <= alpha_orig) flag = TT_ALPHA;
++			else if (best >= beta) flag = TT_BETA;
++			tt.store(key, depth, score_to_tt(best, ply), flag, best_move);
++		}
++		
+ 		return best;
+ 	}
+ 	
+--- a/src/tt.cpp
++++ b/src/tt.cpp
+@@ -56,8 +56,12 @@
+ 		h ^= castle_keys[castle_idx];
+ 		
+ 		if (pos.ep) {
+-			int ep_file = file_of(BB::lsb(pos.ep));
+-			h ^= ep_keys[ep_file];
++			const u64 ep_capturers = (BB::south_east(pos.ep) | BB::south_west(pos.ep))
++				& pos.colour[0] & pos.pieces[Pawn];
++			if (ep_capturers) {
++				int ep_file = file_of(BB::lsb(pos.ep));
++				h ^= ep_keys[ep_file];
++			}
+ 		}
+ 		
+ 		return h;
