@@ -79,7 +79,7 @@ namespace Search {
 	bool is_repetition(u64 hash, i32 ply) {
 		i32 count = 0;
 		for (i32 i = game_ply + ply - 2; i >= 0; i -= 2) {
-			if (rep_stack[i] == hash && ++count >= 2) {
+			if (rep_stack[i] == hash && ++count >= 1) {
 				return true;
 			}
 		}
