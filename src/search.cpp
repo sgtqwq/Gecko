@@ -33,13 +33,13 @@ namespace Search {
 		
 		return MVV_LVA[victim][attacker];
 	}
-
+	
 	static inline i32 score_to_tt(i32 score, i32 ply) {
 		if (score > MATE_SCORE - MAX_PLY) return score + ply;
 		if (score < -MATE_SCORE + MAX_PLY) return score - ply;
 		return score;
 	}
-
+	
 	static inline i32 score_from_tt(i32 score, i32 ply) {
 		if (score > MATE_SCORE - MAX_PLY) return score - ply;
 		if (score < -MATE_SCORE + MAX_PLY) return score + ply;
@@ -75,8 +75,8 @@ namespace Search {
 	void clear_tables() {
 	}
 	
-	bool is_repetition(const Position& pos, i32 ply) {
-		const u64 hash = Zobrist::hash(pos);
+	// Optimized: accepts hash directly instead of recalculating
+	bool is_repetition(u64 hash, i32 ply) {
 		i32 count = 0;
 		for (i32 i = game_ply + ply - 2; i >= 0; i -= 2) {
 			if (rep_stack[i] == hash && ++count >= 2) {
@@ -134,14 +134,18 @@ namespace Search {
 	}
 	
 	static i32 negamax(Position& pos, SearchInfo& info, i32 depth, i32 ply, i32 alpha, i32 beta) {
-		if (ply > 0 && is_repetition(pos, ply)) return 0;
+		// Calculate hash once and reuse it throughout
+		const u64 key = Zobrist::hash(pos);
+		
+		// Check repetition using pre-computed hash
+		if (ply > 0 && is_repetition(key, ply)) return 0;
 		
 		if (depth <= 0) return quiescence(pos, info, ply, alpha, beta);
 		
 		const i32 alpha_orig = alpha;
-		const u64 key = Zobrist::hash(pos);
 		Move tt_move = NullMove;
 		
+		// TT probe reuses the same hash
 		if (TTEntry* entry = tt.probe(key)) {
 			tt_move = entry->best_move;
 			if (entry->depth >= depth) {
@@ -152,6 +156,7 @@ namespace Search {
 			}
 		}
 		
+		// Store hash in repetition stack (already computed)
 		rep_stack[game_ply + ply] = key;
 		
 		Move moves[MAX_MOVES];
@@ -201,7 +206,9 @@ namespace Search {
 		info.reset();
 		info.start_time = std::chrono::steady_clock::now();
 		
-		rep_stack[game_ply] = Zobrist::hash(pos);
+		// Calculate hash once at root
+		const u64 root_hash = Zobrist::hash(pos);
+		rep_stack[game_ply] = root_hash;
 		
 		Move best       = NullMove;
 		i32  best_score = -INF;
