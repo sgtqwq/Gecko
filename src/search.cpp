@@ -34,10 +34,22 @@ namespace Search {
 		return MVV_LVA[victim][attacker];
 	}
 	
-	static void order_moves(const Position& pos, Move* moves, i32 count) {
+	static inline i32 score_to_tt(i32 score, i32 ply) {
+		if (score > MATE_SCORE - MAX_PLY) return score + ply;
+		if (score < -MATE_SCORE + MAX_PLY) return score - ply;
+		return score;
+	}
+	
+	static inline i32 score_from_tt(i32 score, i32 ply) {
+		if (score > MATE_SCORE - MAX_PLY) return score - ply;
+		if (score < -MATE_SCORE + MAX_PLY) return score + ply;
+		return score;
+	}
+	
+	static void order_moves(const Position& pos, Move* moves, i32 count, Move tt_move = NullMove) {
 		i32 scores[MAX_MOVES];
 		for (i32 i = 0; i < count; ++i) {
-			scores[i] = mvv_lva_score(pos, moves[i]);
+			scores[i] = (moves[i] == tt_move) ? 1000000 : mvv_lva_score(pos, moves[i]);
 		}
 		
 		// Insertion sort (descending). Move lists are short, so this is
@@ -63,8 +75,8 @@ namespace Search {
 	void clear_tables() {
 	}
 	
-	bool is_repetition(const Position& pos, i32 ply) {
-		const u64 hash = Zobrist::hash(pos);
+	// Optimized: accepts hash directly instead of recalculating
+	bool is_repetition(u64 hash, i32 ply) {
 		i32 count = 0;
 		for (i32 i = game_ply + ply - 2; i >= 0; i -= 2) {
 			if (rep_stack[i] == hash && ++count >= 2) {
@@ -122,17 +134,37 @@ namespace Search {
 	}
 	
 	static i32 negamax(Position& pos, SearchInfo& info, i32 depth, i32 ply, i32 alpha, i32 beta) {
-		if (ply > 0 && is_repetition(pos, ply)) return 0;
+		// Calculate hash once and reuse it throughout
+		const u64 key = Zobrist::hash(pos);
+		
+		// Check repetition using pre-computed hash
+		if (ply > 0 && is_repetition(key, ply)) return 0;
 		
 		if (depth <= 0) return quiescence(pos, info, ply, alpha, beta);
 		
-		rep_stack[game_ply + ply] = Zobrist::hash(pos);
+		const i32 alpha_orig = alpha;
+		Move tt_move = NullMove;
+		
+		// TT probe reuses the same hash
+		if (TTEntry* entry = tt.probe(key)) {
+			tt_move = entry->best_move;
+			if (entry->depth >= depth) {
+				const i32 tt_score = score_from_tt(entry->score, ply);
+				if (entry->flag == TT_EXACT) return tt_score;
+				if (entry->flag == TT_ALPHA && tt_score <= alpha) return tt_score;
+				if (entry->flag == TT_BETA  && tt_score >= beta)  return tt_score;
+			}
+		}
+		
+		// Store hash in repetition stack (already computed)
+		rep_stack[game_ply + ply] = key;
 		
 		Move moves[MAX_MOVES];
 		const i32 count = generate_moves(pos, moves, false);
-		order_moves(pos, moves, count);
+		order_moves(pos, moves, count, tt_move);
 		
 		i32 legal = 0, best = -INF;
+		Move best_move = NullMove;
 		
 		for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {
 			Position next = pos;
@@ -146,7 +178,10 @@ namespace Search {
 			}
 			
 			const i32 score = -negamax(next, info, depth - 1, ply + 1, -beta, -alpha);
-			if (score > best) best = score;
+			if (score > best) {
+				best = score;
+				best_move = moves[i];
+			}
 			if (best > alpha) alpha = best;
 			if (alpha >= beta) break;
 		}
@@ -154,6 +189,13 @@ namespace Search {
 		if (legal == 0) {
 			const i32 king_sq = BB::lsb(pos.colour[0] & pos.pieces[King]);
 			return pos.is_attacked(king_sq) ? -MATE_SCORE + ply : 0;
+		}
+		
+		if (!stopped.load(std::memory_order_relaxed)) {
+			u8 flag = TT_EXACT;
+			if (best <= alpha_orig) flag = TT_ALPHA;
+			else if (best >= beta) flag = TT_BETA;
+			tt.store(key, depth, score_to_tt(best, ply), flag, best_move);
 		}
 		
 		return best;
@@ -164,7 +206,9 @@ namespace Search {
 		info.reset();
 		info.start_time = std::chrono::steady_clock::now();
 		
-		rep_stack[game_ply] = Zobrist::hash(pos);
+		// Calculate hash once at root
+		const u64 root_hash = Zobrist::hash(pos);
+		rep_stack[game_ply] = root_hash;
 		
 		Move best       = NullMove;
 		i32  best_score = -INF;

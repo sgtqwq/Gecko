@@ -56,8 +56,12 @@ namespace Zobrist {
 		h ^= castle_keys[castle_idx];
 		
 		if (pos.ep) {
-			int ep_file = file_of(BB::lsb(pos.ep));
-			h ^= ep_keys[ep_file];
+			const u64 ep_capturers = (BB::south_east(pos.ep) | BB::south_west(pos.ep))
+				& pos.colour[0] & pos.pieces[Pawn];
+			if (ep_capturers) {
+				int ep_file = file_of(BB::lsb(pos.ep));
+				h ^= ep_keys[ep_file];
+			}
 		}
 		
 		return h;
