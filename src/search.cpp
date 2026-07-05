@@ -4,12 +4,16 @@
 #include "tt.h"
 
 #include <iostream>
+#include <algorithm>
+#include <cmath>
+#include <algorithm>
 
 namespace Search {
 	
 	std::atomic<bool> stopped{false};
 	u64 rep_stack[1024]{};
 	i32 game_ply = 0;
+	HistoryTable history;
 	
 	// PNBRQKX (X = no piece)
 	constexpr i32 MVV_LVA[7][7] = {
@@ -34,6 +38,14 @@ namespace Search {
 		return MVV_LVA[victim][attacker];
 	}
 	
+	static inline bool is_capture(const Position& pos, const Move& move) {
+		// Normal capture
+		if (pos.piece_on(move.to) != None) return true;
+		// En passant
+		if (pos.piece_on(move.from) == Pawn && pos.ep && BB::square_bb(move.to) == pos.ep) return true;
+		return false;
+	}
+	
 	static inline i32 score_to_tt(i32 score, i32 ply) {
 		if (score > MATE_SCORE - MAX_PLY) return score + ply;
 		if (score < -MATE_SCORE + MAX_PLY) return score - ply;
@@ -46,10 +58,26 @@ namespace Search {
 		return score;
 	}
 	
-	static void order_moves(const Position& pos, Move* moves, i32 count, Move tt_move = NullMove) {
+	// Calculate history bonus based on depth
+	static inline i32 history_bonus(i32 depth) {
+		return std::min(HISTORY_BONUS_MAX, depth * depth + depth * 2);
+	}
+	
+	static void order_moves(const Position& pos, Move* moves, i32 count, Move tt_move = NullMove, bool stm_flipped = false) {
 		i32 scores[MAX_MOVES];
+		
 		for (i32 i = 0; i < count; ++i) {
-			scores[i] = (moves[i] == tt_move) ? 1000000 : mvv_lva_score(pos, moves[i]);
+			if (moves[i] == tt_move) {
+				scores[i] = 1000000;  // TT move gets highest priority
+			}
+			else if (is_capture(pos, moves[i])) {
+				// Captures scored by MVV-LVA (range: ~10-55)
+				scores[i] = 100000 + mvv_lva_score(pos, moves[i]);
+			}
+			else {
+				// Quiet moves scored by history heuristic
+				scores[i] = history.get_score(stm_flipped, moves[i].from, moves[i].to);
+			}
 		}
 		
 		// Insertion sort (descending). Move lists are short, so this is
@@ -70,9 +98,11 @@ namespace Search {
 	
 	void init() {
 		stopped.store(false, std::memory_order_relaxed);
+		history.clear();
 	}
 	
 	void clear_tables() {
+		history.clear();
 	}
 	
 	// Optimized: accepts hash directly instead of recalculating
@@ -107,7 +137,7 @@ namespace Search {
 		
 		Move moves[MAX_MOVES];
 		const i32 count = generate_moves(pos, moves, true);
-		order_moves(pos, moves, count);
+		order_moves(pos, moves, count, NullMove, pos.flipped);
 		
 		i32 legal = 0;
 		i32 best = stand_pat;
@@ -161,10 +191,14 @@ namespace Search {
 		
 		Move moves[MAX_MOVES];
 		const i32 count = generate_moves(pos, moves, false);
-		order_moves(pos, moves, count, tt_move);
+		order_moves(pos, moves, count, tt_move, pos.flipped);
 		
 		i32 legal = 0, best = -INF;
 		Move best_move = NullMove;
+		
+		// Track quiet moves tried for history updates
+		Move quiets_tried[MAX_MOVES];
+		i32 quiets_count = 0;
 		
 		for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {
 			Position next = pos;
@@ -177,13 +211,36 @@ namespace Search {
 				stopped.store(true, std::memory_order_relaxed);
 			}
 			
+			const bool is_quiet = !is_capture(pos, moves[i]) && moves[i].promo == None;
+			
 			const i32 score = -negamax(next, info, depth - 1, ply + 1, -beta, -alpha);
+			
 			if (score > best) {
 				best = score;
 				best_move = moves[i];
 			}
-			if (best > alpha) alpha = best;
-			if (alpha >= beta) break;
+			
+			if (best > alpha) {
+				alpha = best;
+				if (alpha >= beta) {
+					// Beta cutoff - update history for the move that caused it
+					if (is_quiet) {
+						const i32 bonus = history_bonus(depth);
+						history.update(pos.flipped, best_move.from, best_move.to, bonus);
+						
+						// Penalize other quiets that were tried before the cutoff
+						for (i32 j = 0; j < quiets_count; ++j) {
+							history.update(pos.flipped, quiets_tried[j].from, quiets_tried[j].to, -bonus);
+						}
+					}
+					break;
+				}
+			}
+			
+			// Track quiet moves for later penalty if we get a cutoff
+			if (is_quiet && quiets_count < MAX_MOVES) {
+				quiets_tried[quiets_count++] = moves[i];
+			}
 		}
 		
 		if (legal == 0) {
@@ -216,7 +273,7 @@ namespace Search {
 		for (i32 depth = 1; depth <= max_depth; ++depth) {
 			Move moves[MAX_MOVES];
 			const i32 count = generate_moves(pos, moves, false);
-			order_moves(pos, moves, count);
+			order_moves(pos, moves, count, best, pos.flipped);  // Use previous iteration's best move
 			
 			i32 alpha = -INF, beta = INF;
 			Move cur_best  = NullMove;
