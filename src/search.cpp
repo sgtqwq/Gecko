@@ -63,6 +63,11 @@ namespace Search {
 		return std::min(HISTORY_BONUS_MAX, depth * depth + depth * 2);
 	}
 	
+	static inline bool in_check(const Position& pos) {
+		const i32 king_sq = BB::lsb(pos.colour[0] & pos.pieces[King]);
+		return pos.is_attacked(king_sq, true);
+	}
+	
 	static void order_moves(const Position& pos, Move* moves, i32 count, Move tt_move = NullMove, bool stm_flipped = false) {
 		i32 scores[MAX_MOVES];
 		
@@ -116,11 +121,6 @@ namespace Search {
 		return false;
 	}
 	
-	static inline bool in_check(const Position& pos) {
-		const i32 king_sq = BB::lsb(pos.colour[0] & pos.pieces[King]);
-		return pos.is_attacked(king_sq, true);
-	}
-	
 	static i32 quiescence(Position& pos, SearchInfo& info, i32 ply, i32 alpha, i32 beta) {
 		info.nodes++;
 		if ((info.nodes & 2047) == 0 && !info.infinite &&
@@ -169,6 +169,14 @@ namespace Search {
 		
 		// Check repetition using pre-computed hash
 		if (ply > 0 && is_repetition(key, ply)) return 0;
+		
+		// Check if we're in check - needed for extensions
+		const bool in_check_now = in_check(pos);
+		
+		// Check extension: extend search by 1 ply when in check
+		if (in_check_now && depth < MAX_PLY - 1) {
+			depth++;
+		}
 		
 		if (depth <= 0) return quiescence(pos, info, ply, alpha, beta);
 		
@@ -244,8 +252,8 @@ namespace Search {
 		}
 		
 		if (legal == 0) {
-			const i32 king_sq = BB::lsb(pos.colour[0] & pos.pieces[King]);
-			return pos.is_attacked(king_sq) ? -MATE_SCORE + ply : 0;
+			// Checkmate or stalemate
+			return in_check_now ? -MATE_SCORE + ply : 0;
 		}
 		
 		if (!stopped.load(std::memory_order_relaxed)) {
