@@ -13,10 +13,10 @@ enum TTFlag : u8 {
 };
 
 struct TTEntry {
-	u64 key;
-	i32 score;
-	i16 depth;
-	u8 flag;
+	u64  key;
+	i16  score;
+	u8   depth;
+	u8   flag;
 	Move best_move;
 };
 

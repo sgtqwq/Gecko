@@ -14,8 +14,6 @@ namespace Search {
 	i32 game_ply = 0;
 	HistoryTable history;
 	
-	// PZChessBot-style base LMR table. Values are stored in 1/1024 ply units.
-	// Only the base reduction is used: no PV/cut-node/history/TT/capture modifiers.
 	constexpr i32 LMR_MOVES = 250;
 	constexpr i32 LMR_SCALE = 1024;
 	constexpr i32 LMR_A = 108;
@@ -246,9 +244,6 @@ namespace Search {
 			const i32 new_depth = depth - 1;
 			i32 score;
 			
-			// Late Move Reductions, PZChessBot-style base reduction only.
-			// We deliberately do not use PVS/null-window search here; both reduced
-			// and verification searches keep the normal alpha-beta window.
 			if (depth >= 2 && move_index >= 1 + 2 * root) {
 				const i32 r_idx = std::min(move_index, LMR_MOVES - 1);
 				i32 r = reduction[r_idx][std::min(depth, MAX_PLY)];
