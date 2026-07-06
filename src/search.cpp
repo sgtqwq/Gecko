@@ -6,7 +6,6 @@
 #include <iostream>
 #include <algorithm>
 #include <cmath>
-#include <algorithm>
 
 namespace Search {
 	
@@ -15,6 +14,24 @@ namespace Search {
 	i32 game_ply = 0;
 	HistoryTable history;
 	
+	// PZChessBot-style base LMR table. Values are stored in 1/1024 ply units.
+	// Only the base reduction is used: no PV/cut-node/history/TT/capture modifiers.
+	constexpr i32 LMR_MOVES = 250;
+	constexpr i32 LMR_SCALE = 1024;
+	constexpr i32 LMR_A = 108;
+	constexpr i32 LMR_B = 243;
+	constexpr i32 LMR_BASE = -70;
+	u16 reduction[LMR_MOVES][MAX_PLY + 1]{};
+
+	static void init_lmr() {
+		for (i32 i = 1; i < LMR_MOVES; ++i) {
+			for (i32 d = 1; d <= MAX_PLY; ++d) {
+				const double r = (LMR_A / 100.0 + std::log(i) * std::log(d) / (LMR_B / 100.0)) * LMR_SCALE;
+				reduction[i][d] = static_cast<u16>(r);
+			}
+		}
+	}
+
 	// PNBRQKX (X = no piece)
 	constexpr i32 MVV_LVA[7][7] = {
 		{15, 14, 13, 12, 11, 10, 0}, // Taking a pawn
@@ -104,6 +121,7 @@ namespace Search {
 	void init() {
 		stopped.store(false, std::memory_order_relaxed);
 		history.clear();
+		init_lmr();
 	}
 	
 	void clear_tables() {
@@ -164,11 +182,14 @@ namespace Search {
 	}
 	
 	static i32 negamax(Position& pos, SearchInfo& info, i32 depth, i32 ply, i32 alpha, i32 beta) {
+		const bool root = (ply == 0);
+		info.seldepth = std::max(info.seldepth, ply);
+		
 		// Calculate hash once and reuse it throughout
 		const u64 key = Zobrist::hash(pos);
 		
-		// Check repetition using pre-computed hash
-		if (ply > 0 && is_repetition(key, ply)) return 0;
+		// Check repetition using pre-computed hash. The root position itself should not draw.
+		if (!root && is_repetition(key, ply)) return 0;
 		
 		// Check if we're in check - needed for extensions
 		const bool in_check_now = in_check(pos);
@@ -183,10 +204,10 @@ namespace Search {
 		const i32 alpha_orig = alpha;
 		Move tt_move = NullMove;
 		
-		// TT probe reuses the same hash
+		// TT probe reuses the same hash. Do not cut off at root; root must refresh bestmove.
 		if (TTEntry* entry = tt.probe(key)) {
 			tt_move = entry->best_move;
-			if (entry->depth >= depth) {
+			if (!root && entry->depth >= depth) {
 				const i32 tt_score = score_from_tt(entry->score, ply);
 				if (entry->flag == TT_EXACT) return tt_score;
 				if (entry->flag == TT_ALPHA && tt_score <= alpha) return tt_score;
@@ -211,6 +232,8 @@ namespace Search {
 		for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {
 			Position next = pos;
 			if (!next.make_move(moves[i])) continue;
+			
+			const i32 move_index = legal;
 			legal++;
 			info.nodes++;
 			
@@ -220,12 +243,38 @@ namespace Search {
 			}
 			
 			const bool is_quiet = !is_capture(pos, moves[i]) && moves[i].promo == None;
+			const i32 new_depth = depth - 1;
+			i32 score;
 			
-			const i32 score = -negamax(next, info, depth - 1, ply + 1, -beta, -alpha);
+			// Late Move Reductions, PZChessBot-style base reduction only.
+			// We deliberately do not use PVS/null-window search here; both reduced
+			// and verification searches keep the normal alpha-beta window.
+			if (depth >= 2 && move_index >= 1 + 2 * root) {
+				const i32 r_idx = std::min(move_index, LMR_MOVES - 1);
+				i32 r = reduction[r_idx][std::min(depth, MAX_PLY)];
+				r -= LMR_BASE;
+				const i32 searched_depth = std::clamp(new_depth - r / LMR_SCALE, 1, new_depth);
+				
+				score = -negamax(next, info, searched_depth, ply + 1, -beta, -alpha);
+				
+				if (!stopped.load(std::memory_order_relaxed) && score > alpha && searched_depth < new_depth) {
+					// Reduced search failed high, so verify at full depth.
+					score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha);
+				}
+			}
+			else {
+				score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha);
+			}
+			
+			if (stopped.load(std::memory_order_relaxed)) break;
 			
 			if (score > best) {
 				best = score;
 				best_move = moves[i];
+				if (root) {
+					info.pv[0] = best_move;
+					info.pv_length = 1;
+				}
 			}
 			
 			if (best > alpha) {
@@ -265,7 +314,7 @@ namespace Search {
 		
 		return best;
 	}
-	
+
 	Move search(Position& pos, SearchInfo& info, i32 max_depth) {
 		stopped.store(false, std::memory_order_relaxed);
 		info.reset();
@@ -279,34 +328,15 @@ namespace Search {
 		i32  best_score = -INF;
 		
 		for (i32 depth = 1; depth <= max_depth; ++depth) {
-			Move moves[MAX_MOVES];
-			const i32 count = generate_moves(pos, moves, false);
-			order_moves(pos, moves, count, best, pos.flipped);  // Use previous iteration's best move
+			info.pv[0] = best;
+			info.pv_length = best.is_none() ? 0 : 1;
 			
-			i32 alpha = -INF, beta = INF;
-			Move cur_best  = NullMove;
-			i32  cur_score = -INF;
-			
-			for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {
-				Position next = pos;
-				if (!next.make_move(moves[i])) continue;
-				info.nodes++;
-				
-				const i32 score = -negamax(next, info, depth - 1, 1, -beta, -alpha);
-				if (stopped.load(std::memory_order_relaxed)) break;
-				
-				if (score > cur_score) {
-					cur_score = score;
-					cur_best  = moves[i];
-				}
-				if (score > alpha) alpha = score;
-			}
-			
+			const i32 score = negamax(pos, info, depth, 0, -INF, INF);
 			if (stopped.load(std::memory_order_relaxed)) break;
 			
-			if (!cur_best.is_none()) {
-				best       = cur_best;
-				best_score = cur_score;
+			if (!info.pv[0].is_none()) {
+				best       = info.pv[0];
+				best_score = score;
 				info.depth = depth;
 				
 				const i64 elapsed = info.elapsed_time();
@@ -328,7 +358,7 @@ namespace Search {
 		
 		return best;
 	}
-	
+
 	void stop() {
 		stopped.store(true, std::memory_order_relaxed);
 	}
