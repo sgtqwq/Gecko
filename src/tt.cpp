@@ -1,6 +1,7 @@
 #include "tt.h"
 #include "position.h"
 #include "bitboard.h"
+#include <algorithm>
 #include <cstring>
 #include <random>
 #include <iostream>
@@ -15,21 +16,13 @@ namespace Zobrist {
 	void init() {
 		std::mt19937_64 rng(0x1234567890ABCDEF);
 		
-		for (int c = 0; c < 2; c++) {
-			for (int pt = 0; pt < 6; pt++) {
-				for (int sq = 0; sq < 64; sq++) {
+		for (int c = 0; c < 2; c++)
+			for (int pt = 0; pt < 6; pt++)
+				for (int sq = 0; sq < 64; sq++)
 					piece_keys[c][pt][sq] = rng();
-				}
-			}
-		}
 		
-		for (int i = 0; i < 16; i++) {
-			castle_keys[i] = rng();
-		}
-		
-		for (int i = 0; i < 8; i++) {
-			ep_keys[i] = rng();
-		}
+		for (int i = 0; i < 16; i++) castle_keys[i] = rng();
+		for (int i = 0; i < 8;  i++) ep_keys[i]     = rng();
 	}
 	
 	u64 hash(const Position& pos) {
@@ -57,11 +50,9 @@ namespace Zobrist {
 		
 		if (pos.ep) {
 			const u64 ep_capturers = (BB::south_east(pos.ep) | BB::south_west(pos.ep))
-				& pos.colour[0] & pos.pieces[Pawn];
-			if (ep_capturers) {
-				int ep_file = file_of(BB::lsb(pos.ep));
-				h ^= ep_keys[ep_file];
-			}
+			& pos.colour[0] & pos.pieces[Pawn];
+			if (ep_capturers)
+				h ^= ep_keys[file_of(BB::lsb(pos.ep))];
 		}
 		
 		return h;
@@ -82,23 +73,19 @@ void TT::resize(size_t mb) {
 	
 	size_t bytes = mb * 1024ULL * 1024ULL;
 	num_entries = bytes / sizeof(TTEntry);
-	
 	if (num_entries == 0) num_entries = 1;
 	
-	table = new TTEntry[num_entries](); 
+	table = new TTEntry[num_entries]();
 	used = 0;
 	
 	size_t actual_mb = (num_entries * sizeof(TTEntry)) / (1024 * 1024);
-	std::cout << "info string Hash table: " << num_entries << " entries (" 
+	std::cout << "info string Hash table: " << num_entries << " entries ("
 	<< actual_mb << " MB, entry size " << sizeof(TTEntry) << " bytes)" << std::endl;
 }
 
 void TT::clear() {
-	if (table && num_entries > 0) {
-		for (size_t i = 0; i < num_entries; ++i) {
-			table[i] = TTEntry{};
-		}
-	}
+	if (table && num_entries > 0)
+		std::memset(table, 0, num_entries * sizeof(TTEntry));
 	used = 0;
 }
 
@@ -108,13 +95,13 @@ void TT::store(u64 key, i32 depth, i32 score, u8 flag, Move move) {
 	
 	bool was_empty = (entry->key == 0);
 	
-	if (was_empty || entry->key == key || depth >= entry->depth) {
+	if (was_empty || entry->key == key || depth >= static_cast<i32>(entry->depth)) {
 		if (was_empty) used++;
 		
-		entry->key = key;
-		entry->depth = depth;
-		entry->score = score;
-		entry->flag = flag;
+		entry->key       = key;
+		entry->depth     = static_cast<u8>(std::clamp(depth, 0, 255));
+		entry->score     = static_cast<i16>(std::clamp(score, -32000, 32000));
+		entry->flag      = flag;
 		entry->best_move = move;
 	}
 }
@@ -122,11 +109,7 @@ void TT::store(u64 key, i32 depth, i32 score, u8 flag, Move move) {
 TTEntry* TT::probe(u64 key) {
 	size_t idx = key % num_entries;
 	TTEntry* entry = &table[idx];
-	
-	if (entry->key == key) {
-		return entry;
-	}
-	return nullptr;
+	return (entry->key == key) ? entry : nullptr;
 }
 
 int TT::hashfull() const {
