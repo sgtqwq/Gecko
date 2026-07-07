@@ -16,15 +16,12 @@ namespace Search {
 	
 	constexpr i32 LMR_MOVES = 250;
 	constexpr i32 LMR_SCALE = 1024;
-	constexpr i32 LMR_A = 108;
-	constexpr i32 LMR_B = 243;
-	constexpr i32 LMR_BASE = -70;
 	u16 reduction[LMR_MOVES][MAX_PLY + 1]{};
 
 	static void init_lmr() {
 		for (i32 i = 1; i < LMR_MOVES; ++i) {
 			for (i32 d = 1; d <= MAX_PLY; ++d) {
-				const double r = (LMR_A / 100.0 + std::log(i) * std::log(d) / (LMR_B / 100.0)) * LMR_SCALE;
+				const double r = (1.0 + std::log(i) * std::log(d) *0.42 ) * 1024;
 				reduction[i][d] = static_cast<u16>(r);
 			}
 		}
@@ -247,7 +244,7 @@ namespace Search {
 			if (depth >= 2 && move_index >= 1 + 2 * root) {
 				const i32 r_idx = std::min(move_index, LMR_MOVES - 1);
 				i32 r = reduction[r_idx][std::min(depth, MAX_PLY)];
-				r -= LMR_BASE;
+				if(!is_quiet) r /= 2;
 				const i32 searched_depth = std::clamp(new_depth - r / LMR_SCALE, 1, new_depth);
 				
 				score = -negamax(next, info, searched_depth, ply + 1, -beta, -alpha);
