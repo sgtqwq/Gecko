@@ -17,7 +17,11 @@ namespace Search {
 	constexpr i32 LMR_MOVES = 250;
 	constexpr i32 LMR_SCALE = 1024;
 	u16 reduction[LMR_MOVES][MAX_PLY + 1]{};
-
+	
+	// RFP constants
+	constexpr i32 RFP_DEPTH = 8;
+	constexpr i32 RFP_MARGIN = 88;
+	
 	static void init_lmr() {
 		for (i32 i = 1; i < LMR_MOVES; ++i) {
 			for (i32 d = 1; d <= MAX_PLY; ++d) {
@@ -26,7 +30,7 @@ namespace Search {
 			}
 		}
 	}
-
+	
 	// PNBRQKX (X = no piece)
 	constexpr i32 MVV_LVA[7][7] = {
 		{15, 14, 13, 12, 11, 10, 0}, // Taking a pawn
@@ -176,7 +180,7 @@ namespace Search {
 		return best;
 	}
 	
-	static i32 negamax(Position& pos, SearchInfo& info, i32 depth, i32 ply, i32 alpha, i32 beta) {
+	static i32 negamax(Position& pos, SearchInfo& info, i32 depth, i32 ply, i32 alpha, i32 beta, bool pv_node) {
 		const bool root = (ply == 0);
 		info.seldepth = std::max(info.seldepth, ply);
 		
@@ -210,6 +214,18 @@ namespace Search {
 			}
 		}
 		
+		// Reverse Futility Pruning (RFP)
+		// Only apply in non-PV nodes, when not in check, and at shallow depths
+		if (!pv_node && !in_check_now && depth <= RFP_DEPTH) {
+			const i32 eval = Eval::evaluate(pos);
+			const i32 rfp_margin = RFP_MARGIN * depth;
+			
+			// If our position is so good that even with a margin we're above beta, prune
+			if (eval - rfp_margin >= beta) {
+				return eval - rfp_margin;
+			}
+		}
+		
 		// Store hash in repetition stack (already computed)
 		rep_stack[game_ply + ply] = key;
 		
@@ -239,6 +255,10 @@ namespace Search {
 			
 			const bool is_quiet = !is_capture(pos, moves[i]) && moves[i].promo == None;
 			const i32 new_depth = depth - 1;
+			
+			// A child is a PV node if we're at a PV node and it's the first move
+			const bool child_pv = pv_node && (move_index == 0);
+			
 			i32 score;
 			
 			if (depth >= 2 && move_index >= 1 + 2 * root) {
@@ -247,15 +267,15 @@ namespace Search {
 				if(!is_quiet) r /= 2;
 				const i32 searched_depth = std::clamp(new_depth - r / LMR_SCALE, 1, new_depth);
 				
-				score = -negamax(next, info, searched_depth, ply + 1, -beta, -alpha);
+				score = -negamax(next, info, searched_depth, ply + 1, -beta, -alpha, false);
 				
 				if (!stopped.load(std::memory_order_relaxed) && score > alpha && searched_depth < new_depth) {
 					// Reduced search failed high, so verify at full depth.
-					score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha);
+					score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, child_pv);
 				}
 			}
 			else {
-				score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha);
+				score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, child_pv);
 			}
 			
 			if (stopped.load(std::memory_order_relaxed)) break;
@@ -306,7 +326,7 @@ namespace Search {
 		
 		return best;
 	}
-
+	
 	Move search(Position& pos, SearchInfo& info, i32 max_depth) {
 		stopped.store(false, std::memory_order_relaxed);
 		info.reset();
@@ -323,7 +343,8 @@ namespace Search {
 			info.pv[0] = best;
 			info.pv_length = best.is_none() ? 0 : 1;
 			
-			const i32 score = negamax(pos, info, depth, 0, -INF, INF);
+			// Root is always a PV node
+			const i32 score = negamax(pos, info, depth, 0, -INF, INF, true);
 			if (stopped.load(std::memory_order_relaxed)) break;
 			
 			if (!info.pv[0].is_none()) {
@@ -350,7 +371,7 @@ namespace Search {
 		
 		return best;
 	}
-
+	
 	void stop() {
 		stopped.store(true, std::memory_order_relaxed);
 	}
