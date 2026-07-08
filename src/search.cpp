@@ -25,6 +25,10 @@ namespace Search {
 	constexpr i32 RFP_DEPTH = 8;
 	constexpr i32 RFP_MARGIN = 88;
 	
+	// Aspiration window constants
+	constexpr i32 ASPIRATION_MIN_DEPTH = 4;
+	constexpr i32 ASPIRATION_DELTA = 25;
+	
 	static void init_lmr() {
 		for (i32 i = 1; i < LMR_MOVES; ++i) {
 			for (i32 d = 1; d <= MAX_PLY; ++d) {
@@ -258,27 +262,37 @@ namespace Search {
 			
 			const bool is_quiet = !is_capture(pos, moves[i]) && moves[i].promo == None;
 			const i32 new_depth = depth - 1;
-			
-			// A child is a PV node if we're at a PV node and it's the first move
-			const bool child_pv = pv_node && (move_index == 0);
+			const bool first_move = (move_index == 0);
 			
 			i32 score;
 			
-			if (depth >= 2 && move_index >= 1 + 2 * root) {
-				const i32 r_idx = std::min(move_index, LMR_MOVES - 1);
-				i32 r = reduction[r_idx][std::min(depth, MAX_PLY)];
-				r -= LMR_BASE;
-				const i32 searched_depth = std::clamp(new_depth - r / LMR_SCALE, 1, new_depth);
-				
-				score = -negamax(next, info, searched_depth, ply + 1, -beta, -alpha, false);
-				
-				if (!stopped.load(std::memory_order_relaxed) && score > alpha && searched_depth < new_depth) {
-					// Reduced search failed high, so verify at full depth.
-					score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, child_pv);
-				}
+			if (pv_node && first_move) {
+				// Search the first PV move with the full window.
+				score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, true);
 			}
 			else {
-				score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, child_pv);
+				// Later moves are searched with a null window first.
+				if (depth >= 2 && move_index >= 1 + 2 * root) {
+					const i32 r_idx = std::min(move_index, LMR_MOVES - 1);
+					i32 r = reduction[r_idx][std::min(depth, MAX_PLY)];
+					r -= LMR_BASE;
+					const i32 searched_depth = std::clamp(new_depth - r / LMR_SCALE, 1, new_depth);
+					
+					score = -negamax(next, info, searched_depth, ply + 1, -alpha - 1, -alpha, false);
+					
+					if (!stopped.load(std::memory_order_relaxed) && score > alpha && searched_depth < new_depth) {
+						// Verify a promising reduced move at full depth before accepting it.
+						score = -negamax(next, info, new_depth, ply + 1, -alpha - 1, -alpha, false);
+					}
+				}
+				else {
+					score = -negamax(next, info, new_depth, ply + 1, -alpha - 1, -alpha, false);
+				}
+				
+				if (!stopped.load(std::memory_order_relaxed) && pv_node && score > alpha && score < beta) {
+					// Re-search PV improvements with the full window.
+					score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, true);
+				}
 			}
 			
 			if (stopped.load(std::memory_order_relaxed)) break;
@@ -330,6 +344,36 @@ namespace Search {
 		return best;
 	}
 	
+	static i32 aspiration_search(Position& pos, SearchInfo& info, i32 depth, i32 prev_score, Move prev_best) {
+		if (depth < ASPIRATION_MIN_DEPTH || prev_best.is_none() ||
+			std::abs(prev_score) >= MATE_SCORE - MAX_PLY) {
+			return negamax(pos, info, depth, 0, -INF, INF, true);
+		}
+		
+		i32 delta = ASPIRATION_DELTA + prev_score * prev_score / 16384;
+		i32 alpha = std::max(prev_score - delta, -INF);
+		i32 beta  = std::min(prev_score + delta, INF);
+		
+		while (true) {
+			const i32 score = negamax(pos, info, depth, 0, alpha, beta, true);
+			if (stopped.load(std::memory_order_relaxed)) return score;
+			
+			if (score <= alpha) {
+				beta = (alpha + beta) / 2;
+				alpha = std::max(alpha - delta, -INF);
+			}
+			else if (score >= beta) {
+				alpha = (alpha + beta) / 2;
+				beta = std::min(beta + delta, INF);
+			}
+			else {
+				return score;
+			}
+			
+			delta = std::min(delta + delta / 2 + 1, INF);
+		}
+	}
+	
 	Move search(Position& pos, SearchInfo& info, i32 max_depth) {
 		stopped.store(false, std::memory_order_relaxed);
 		info.reset();
@@ -346,8 +390,8 @@ namespace Search {
 			info.pv[0] = best;
 			info.pv_length = best.is_none() ? 0 : 1;
 			
-			// Root is always a PV node
-			const i32 score = negamax(pos, info, depth, 0, -INF, INF, true);
+			// Root is always a PV node.
+			const i32 score = aspiration_search(pos, info, depth, best_score, best);
 			if (stopped.load(std::memory_order_relaxed)) break;
 			
 			if (!info.pv[0].is_none()) {
