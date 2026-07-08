@@ -209,7 +209,7 @@ namespace Search {
 		// TT probe reuses the same hash. Do not cut off at root; root must refresh bestmove.
 		if (TTEntry* entry = tt.probe(key)) {
 			tt_move = entry->best_move;
-			if (!pv_node && entry->depth >= depth) {
+			if (!root && entry->depth >= depth) {
 				const i32 tt_score = score_from_tt(entry->score, ply);
 				if (entry->flag == TT_EXACT) return tt_score;
 				if (entry->flag == TT_ALPHA && tt_score <= alpha) return tt_score;
