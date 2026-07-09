@@ -25,6 +25,12 @@ namespace Search {
 	constexpr i32 RFP_DEPTH = 8;
 	constexpr i32 RFP_MARGIN = 88;
 	
+	// Aspiration window constants
+	constexpr i32 ASP_MIN_DEPTH          = 4;
+	constexpr i32 ASP_INIT_DELTA         = 25;   
+	constexpr i32 ASP_WIDEN_FACTOR       = 50;   // delta += delta * ASP_WIDEN_FACTOR / 256
+	constexpr i64 ASP_WIDEN_REPORT_DELAY = 1000; // ms
+	
 	static void init_lmr() {
 		for (i32 i = 1; i < LMR_MOVES; ++i) {
 			for (i32 d = 1; d <= MAX_PLY; ++d) {
@@ -330,6 +336,61 @@ namespace Search {
 		return best;
 	}
 	
+	static void report_uci_info(SearchInfo& info, const Position& pos, Move best, i32 score, i32 depth) {
+		const i64 elapsed = info.elapsed_time();
+		const u64 nps     = elapsed > 0
+		? (info.nodes * 1000ULL / static_cast<u64>(elapsed))
+		: 0;
+		
+		std::cout << "info depth " << depth
+		<< " score cp " << score
+		<< " nodes "    << info.nodes
+		<< " nps "      << nps
+		<< " time "     << elapsed
+		<< " pv "       << move_to_string(best, pos.flipped)
+		<< std::endl;
+	}
+	
+	static i32 aspiration_window(Position& pos, SearchInfo& info, i32 depth, i32 prev_score, bool report) {
+		i32 delta     = ASP_INIT_DELTA;
+		i32 alpha     = -INF;
+		i32 beta      = INF;
+		i32 asp_depth = depth;
+		
+		if (depth >= ASP_MIN_DEPTH) {
+			alpha = std::max(prev_score - delta, -INF);
+			beta  = std::min(prev_score + delta, INF);
+		}
+		
+		while (true) {
+			const i32 score = negamax(pos, info, std::max(asp_depth, 1), 0, alpha, beta, true);
+			
+			if (stopped.load(std::memory_order_relaxed)) return score;
+			
+			if (report && (score <= alpha || score >= beta) &&
+				info.elapsed_time() > ASP_WIDEN_REPORT_DELAY) {
+				report_uci_info(info, pos, info.pv[0], score <= alpha ? alpha : beta, depth);
+			}
+			
+			if (score <= alpha) {
+				beta      = (alpha + beta) / 2;
+				alpha     = std::max(alpha - delta, -INF);
+				asp_depth = depth;
+			}
+			else {
+				if (score >= beta) {
+					beta      = std::min(beta + delta, INF);
+					asp_depth = std::max(asp_depth - 1, depth - 5);
+				}
+				else {
+					return score;
+				}
+			}
+			
+			delta += delta * ASP_WIDEN_FACTOR / 256;
+		}
+	}
+	
 	Move search(Position& pos, SearchInfo& info, i32 max_depth) {
 		stopped.store(false, std::memory_order_relaxed);
 		info.reset();
@@ -340,33 +401,22 @@ namespace Search {
 		rep_stack[game_ply] = root_hash;
 		
 		Move best       = NullMove;
-		i32  best_score = -INF;
+		i32  best_score = 0;
 		
 		for (i32 depth = 1; depth <= max_depth; ++depth) {
 			info.pv[0] = best;
 			info.pv_length = best.is_none() ? 0 : 1;
 			
-			// Root is always a PV node
-			const i32 score = negamax(pos, info, depth, 0, -INF, INF, true);
+			// Root is always a PV node.
+			const i32 score = aspiration_window(pos, info, depth, best_score, true);
 			if (stopped.load(std::memory_order_relaxed)) break;
+			
+			best_score = score;
 			
 			if (!info.pv[0].is_none()) {
 				best       = info.pv[0];
-				best_score = score;
 				info.depth = depth;
-				
-				const i64 elapsed = info.elapsed_time();
-				const u64 nps     = elapsed > 0
-				? (info.nodes * 1000ULL / static_cast<u64>(elapsed))
-				: 0;
-				
-				std::cout << "info depth " << depth
-				<< " score cp " << best_score
-				<< " nodes "    << info.nodes
-				<< " nps "      << nps
-				<< " time "     << elapsed
-				<< " pv "       << move_to_string(best, pos.flipped)
-				<< std::endl;
+				report_uci_info(info, pos, best, best_score, depth);
 			}
 			
 			if (!info.infinite && info.elapsed_time() >= info.time_limit) break;
