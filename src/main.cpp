@@ -13,7 +13,7 @@
 #include <vector>
 
 static int run_bench() {
-	constexpr i32 BENCH_DEPTH = 7;
+	constexpr i32 BENCH_DEPTH = 15;
 	
 	Position pos;
 	pos.set_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");

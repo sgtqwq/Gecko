@@ -78,6 +78,12 @@ namespace Search {
 		return pos.is_attacked(king_sq, true);
 	}
 	
+	static inline bool has_non_pawn_material(const Position& pos) {
+		return (pos.colour[0] &
+			(pos.pieces[Knight] | pos.pieces[Bishop] |
+				pos.pieces[Rook]   | pos.pieces[Queen])) != 0;
+	}
+	
 	static void order_moves(const Position& pos, Move* moves, i32 count, Move tt_move = NullMove, bool stm_flipped = false) {
 		i32 scores[MAX_MOVES];
 		
@@ -184,7 +190,6 @@ namespace Search {
 		// Check repetition using pre-computed hash. The root position itself should not draw.
 		if (!root && is_repetition(key, ply)) return 0;
 		
-		// Check if we're in check - needed for extensions
 		const bool in_check_now = in_check(pos);
 		
 		// Check extension: extend search by 1 ply when in check
@@ -208,13 +213,43 @@ namespace Search {
 			}
 		}
 		
+		// Static eval, computed once and reused by the pruning heuristics
+		// below. When in check the value is never actually used (every
+		// consumer is guarded by !in_check_now), so a dummy value avoids
+		// paying for a real evaluation in that case.
+		const i32 eval = in_check_now ? 0 : Eval::evaluate(pos);
+		
 		// Reverse Futility Pruning: only in non-PV, not in check, shallow depth.
 		if (!pv_node && !in_check_now && depth <= 8) {
-			const i32 eval = Eval::evaluate(pos);
 			const i32 rfp_margin = 88 * depth;
 			
 			if (eval - rfp_margin >= beta) {
 				return eval - rfp_margin;
+			}
+		}
+		
+		// Null Move Pruning: only in non-PV, not in check, sufficient depth,
+		// and not in a (near-)pure pawn ending where zugzwang is likely.
+		if (!pv_node && !in_check_now && depth >= 3 && has_non_pawn_material(pos)) {
+			if (eval >= beta + 25) {
+				const i32 R = 4 + depth / 3;
+				
+				Position null_pos = pos;
+				null_pos.make_null_move();
+				
+				const i32 null_score = -negamax(null_pos, info, depth - R, ply + 1,
+					-beta, -beta + 1, false);
+				
+				if (stopped.load(std::memory_order_relaxed)) return 0;
+				
+				if (null_score >= beta) {
+					// Do not trust mate scores returned by a null-move search;
+					// they are not verified and can be "fake" mates.
+					if (null_score >= MATE_SCORE - MAX_PLY) {
+						return beta;
+					}
+					return null_score;
+				}
 			}
 		}
 		
@@ -390,6 +425,7 @@ namespace Search {
 				}
 				else if (score >= beta) {
 					beta      = std::min(beta + delta, INF);
+					//From Sirius
 					asp_depth = std::max(asp_depth - 1, depth - 5);
 				}
 				else {

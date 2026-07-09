@@ -90,6 +90,13 @@ void Position::flip() {
 	std::swap(castling[0], castling[2]);
 	std::swap(castling[1], castling[3]);
 }
+void Position::make_null_move() {
+	// A "null move" just passes the turn: clear any en-passant
+	// opportunity (it would be illegal to use after a null move)
+	// and flip perspective, exactly like a normal move would.
+	ep = 0;
+	flip();
+}
 
 PieceType Position::piece_on(i32 sq) const {
 	u64 bb = BB::square_bb(sq);

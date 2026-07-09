@@ -14,6 +14,7 @@ struct Position {
 	Position();
 	void set_fen(const std::string& fen);
 	void flip();
+	void make_null_move();
 	PieceType piece_on(i32 sq) const;
 	u64 all_pieces() const { return colour[0] | colour[1]; }
 	bool is_attacked(i32 sq, bool by_enemy = true) const;
