@@ -396,7 +396,7 @@ namespace Search {
 					break;
 				}
 				
-				delta += delta * 50 / 256;
+				delta += delta * 0.2;
 			}
 			
 			if (stopped.load(std::memory_order_relaxed)) break;
