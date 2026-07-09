@@ -14,19 +14,13 @@ namespace Search {
 	i32 game_ply = 0;
 	HistoryTable history;
 	
-	constexpr i32 LMR_MOVES = 250;
-	constexpr i32 LMR_SCALE = 1024;
-	u16 reduction[LMR_MOVES][MAX_PLY + 1]{};
-	
-	// RFP constants
-	constexpr i32 RFP_DEPTH = 8;
-	constexpr i32 RFP_MARGIN = 88;
+	// LMR reduction table (plies to reduce, already includes base offset).
+	i32 reduction[256][MAX_PLY + 1]{};
 	
 	static void init_lmr() {
-		for (i32 i = 1; i < LMR_MOVES; ++i) {
+		for (i32 i = 1; i < 256; ++i) {
 			for (i32 d = 1; d <= MAX_PLY; ++d) {
-				const double r = (1.0 + std::log(i) * std::log(d) *0.42 ) * 1024;
-				reduction[i][d] = static_cast<u16>(r);
+				reduction[i][d] = static_cast<i32>(1.148 + std::log(i) * std::log(d) / 2.43);
 			}
 		}
 	}
@@ -206,7 +200,7 @@ namespace Search {
 		// TT probe reuses the same hash. Do not cut off at root; root must refresh bestmove.
 		if (TTEntry* entry = tt.probe(key)) {
 			tt_move = entry->best_move;
-			if (!pv_node && entry->depth >= depth) {
+			if (!root && entry->depth >= depth) {
 				const i32 tt_score = score_from_tt(entry->score, ply);
 				if (entry->flag == TT_EXACT) return tt_score;
 				if (entry->flag == TT_ALPHA && tt_score <= alpha) return tt_score;
@@ -214,13 +208,11 @@ namespace Search {
 			}
 		}
 		
-		// Reverse Futility Pruning (RFP)
-		// Only apply in non-PV nodes, when not in check, and at shallow depths
-		if (!pv_node && !in_check_now && depth <= RFP_DEPTH) {
+		// Reverse Futility Pruning: only in non-PV, not in check, shallow depth.
+		if (!pv_node && !in_check_now && depth <= 8) {
 			const i32 eval = Eval::evaluate(pos);
-			const i32 rfp_margin = RFP_MARGIN * depth;
+			const i32 rfp_margin = 88 * depth;
 			
-			// If our position is so good that even with a margin we're above beta, prune
 			if (eval - rfp_margin >= beta) {
 				return eval - rfp_margin;
 			}
@@ -262,10 +254,9 @@ namespace Search {
 			i32 score;
 			
 			if (depth >= 2 && move_index >= 1 + 2 * root) {
-				const i32 r_idx = std::min(move_index, LMR_MOVES - 1);
-				i32 r = reduction[r_idx][std::min(depth, MAX_PLY)];
-				if(!is_quiet) r /= 2;
-				const i32 searched_depth = std::clamp(new_depth - r / LMR_SCALE, 1, new_depth);
+				const i32 r_idx = std::min(move_index, 255);
+				const i32 r = reduction[r_idx][std::min(depth, MAX_PLY)];
+				const i32 searched_depth = std::clamp(new_depth - r, 1, new_depth);
 				
 				score = -negamax(next, info, searched_depth, ply + 1, -beta, -alpha, false);
 				
@@ -327,6 +318,29 @@ namespace Search {
 		return best;
 	}
 	
+	static void report_uci_info(SearchInfo& info, const Position& pos, Move best, i32 score, i32 depth, bool is_lowerbound = false, bool is_upperbound = false) {
+		const i64 elapsed = info.elapsed_time();
+		const u64 nps     = elapsed > 0
+		? (info.nodes * 1000ULL / static_cast<u64>(elapsed))
+		: 0;
+		
+		std::cout << "info depth " << depth
+		<< " score cp " << score;
+		
+		// Add bound type if applicable
+		if (is_lowerbound) {
+			std::cout << " lowerbound";
+		} else if (is_upperbound) {
+			std::cout << " upperbound";
+		}
+		
+		std::cout << " nodes "    << info.nodes
+		<< " nps "      << nps
+		<< " time "     << elapsed
+		<< " pv "       << move_to_string(best, pos.flipped)
+		<< std::endl;
+	}
+	
 	Move search(Position& pos, SearchInfo& info, i32 max_depth) {
 		stopped.store(false, std::memory_order_relaxed);
 		info.reset();
@@ -337,33 +351,62 @@ namespace Search {
 		rep_stack[game_ply] = root_hash;
 		
 		Move best       = NullMove;
-		i32  best_score = -INF;
+		i32  best_score = 0;
 		
 		for (i32 depth = 1; depth <= max_depth; ++depth) {
 			info.pv[0] = best;
 			info.pv_length = best.is_none() ? 0 : 1;
 			
-			// Root is always a PV node
-			const i32 score = negamax(pos, info, depth, 0, -INF, INF, true);
+			// Aspiration window search around the previous score.
+			i32 delta     = 25;
+			i32 alpha     = -INF;
+			i32 beta      = INF;
+			i32 asp_depth = depth;
+			
+			if (depth >= 4) {
+				alpha = std::max(best_score - delta, -INF);
+				beta  = std::min(best_score + delta, INF);
+			}
+			
+			i32 score;
+			while (true) {
+				score = negamax(pos, info, std::max(asp_depth, 1), 0, alpha, beta, true);
+				
+				if (stopped.load(std::memory_order_relaxed)) break;
+				
+				if ((score <= alpha || score >= beta) && info.elapsed_time() > 1000) {
+					// Report with bound information when window fails
+					if (score <= alpha) {
+						report_uci_info(info, pos, info.pv[0], alpha, depth, false, true); // upperbound
+					} else {
+						report_uci_info(info, pos, info.pv[0], beta, depth, true, false);  // lowerbound
+					}
+				}
+				
+				if (score <= alpha) {
+					beta      = (alpha + beta) / 2;
+					alpha     = std::max(alpha - delta, -INF);
+					asp_depth = depth;
+				}
+				else if (score >= beta) {
+					beta      = std::min(beta + delta, INF);
+					asp_depth = std::max(asp_depth - 1, depth - 5);
+				}
+				else {
+					break;
+				}
+				
+				delta += delta * 0.2;
+			}
+			
 			if (stopped.load(std::memory_order_relaxed)) break;
+			
+			best_score = score;
 			
 			if (!info.pv[0].is_none()) {
 				best       = info.pv[0];
-				best_score = score;
 				info.depth = depth;
-				
-				const i64 elapsed = info.elapsed_time();
-				const u64 nps     = elapsed > 0
-				? (info.nodes * 1000ULL / static_cast<u64>(elapsed))
-				: 0;
-				
-				std::cout << "info depth " << depth
-				<< " score cp " << best_score
-				<< " nodes "    << info.nodes
-				<< " nps "      << nps
-				<< " time "     << elapsed
-				<< " pv "       << move_to_string(best, pos.flipped)
-				<< std::endl;
+				report_uci_info(info, pos, best, best_score, depth);
 			}
 			
 			if (!info.infinite && info.elapsed_time() >= info.time_limit) break;
