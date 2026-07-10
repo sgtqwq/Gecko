@@ -292,6 +292,10 @@ namespace Search {
 				const i32 r_idx = std::min(move_index, 255);
 				i32 r = reduction[r_idx][std::min(depth, MAX_PLY)];
 				r -= pv_node;
+				if (is_quiet) {
+					const i32 hist_score = history.get_score(pos.flipped, moves[i].from, moves[i].to);
+					r -= hist_score / 5400;
+				}
 				r = std::max(r, 0);
 				const i32 searched_depth = std::clamp(new_depth - r, 1, new_depth);
 				
