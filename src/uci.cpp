@@ -132,7 +132,7 @@ namespace UCI {
 			try { mb = std::stoi(option_value); } catch (...) { mb = 16; }
 			mb = std::max(1, std::min(mb, 4096));
 			tt.resize(mb);
-			std::cout << "info string Hash set to " << mb << " MB" << std::endl;
+			std::cout << "info string Hash set to " << tt.size_mb() << " MB" << std::endl;
 		}
 		else if (option_name == "Threads") {
 			int threads = 1;

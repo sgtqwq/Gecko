@@ -138,7 +138,14 @@ namespace Search {
 		return false;
 	}
 	
-	static i32 quiescence(Position& pos, SearchInfo& info, i32 ply, i32 alpha, i32 beta) {
+	static inline bool tt_score_can_correct_eval(const TTEntry& entry, i32 tt_score, i32 eval) {
+		if (std::abs(tt_score) >= MATE_SCORE - MAX_PLY) return false;
+		if (entry.flag == TT_EXACT) return true;
+		if (tt_score > eval) return entry.flag != TT_ALPHA;
+		return entry.flag != TT_BETA;
+	}
+	
+	static i32 quiescence(Position& pos, SearchInfo& info, i32 ply, i32 alpha, i32 beta, u64 key) {
 		info.nodes++;
 		if ((info.nodes & 2047) == 0 && !info.infinite &&
 			info.elapsed_time() >= info.time_limit) {
@@ -148,46 +155,80 @@ namespace Search {
 		
 		if (ply >= MAX_PLY) return Eval::evaluate(pos);
 		
-		i32 stand_pat = Eval::evaluate(pos);
+		TTEntry* entry = tt.probe(key);
+		Move tt_move = NullMove;
+		i32 tt_score = TT_NO_SCORE;
+		
+		if (entry) {
+			tt_move = entry->best_move();
+			if (entry->has_score()) {
+				tt_score = score_from_tt(entry->score, ply);
+				if (entry->flag == TT_EXACT) return tt_score;
+				if (entry->flag == TT_ALPHA && tt_score <= alpha) return tt_score;
+				if (entry->flag == TT_BETA  && tt_score >= beta)  return tt_score;
+			}
+		}
+		
+		const i32 raw_eval = entry && entry->has_static_eval()
+			? entry->static_eval
+			: Eval::evaluate(pos);
+		
+		if (!entry || !entry->has_static_eval())
+			tt.store_eval(key, raw_eval);
+		
+		i32 stand_pat = raw_eval;
+		if (entry && entry->has_score() && tt_score_can_correct_eval(*entry, tt_score, stand_pat))
+			stand_pat = tt_score;
+		
 		if (stand_pat >= beta) return stand_pat;
 		if (stand_pat > alpha) alpha = stand_pat;
 		
 		Move moves[MAX_MOVES];
 		const i32 count = generate_moves(pos, moves, true);
-		order_moves(pos, moves, count, NullMove, pos.flipped);
+		order_moves(pos, moves, count, tt_move, pos.flipped);
 		
-		i32 legal = 0;
 		i32 best = stand_pat;
+		Move best_move = NullMove;
+		u8 flag = TT_ALPHA;
 		
 		for (i32 i = 0; i < count; ++i) {
 			if (stopped.load(std::memory_order_relaxed)) break;
 			
 			Position next = pos;
 			if (!next.make_move(moves[i])) continue;
-			legal++;
 			
-			const i32 score = -quiescence(next, info, ply + 1, -beta, -alpha);
+			const u64 child_key = Zobrist::hash(next);
+			tt.prefetch(child_key);
+			const i32 score = -quiescence(next, info, ply + 1, -beta, -alpha, child_key);
 			
 			if (score > best) {
 				best = score;
+				best_move = moves[i];
 				if (score > alpha) {
 					alpha = score;
-					if (alpha >= beta) break;
+					flag = TT_EXACT;
+					if (alpha >= beta) {
+						flag = TT_BETA;
+						break;
+					}
 				}
 			}
 		}
 		
+		if (!stopped.load(std::memory_order_relaxed)) {
+			const Move stored_move = !best_move.is_none() ? best_move : tt_move;
+			tt.store(key, 0, score_to_tt(best, ply), raw_eval, flag, stored_move);
+		}
+		
 		return best;
 	}
-	
-	static i32 negamax(Position& pos, SearchInfo& info, i32 depth, i32 ply, i32 alpha, i32 beta, bool pv_node) {
+
+	static i32 negamax(Position& pos, SearchInfo& info, i32 depth, i32 ply,
+		i32 alpha, i32 beta, bool pv_node, u64 key) {
 		const bool root = (ply == 0);
 		info.seldepth = std::max(info.seldepth, ply);
 		
-		// Calculate hash once and reuse it throughout
-		const u64 key = Zobrist::hash(pos);
-		
-		// Check repetition using pre-computed hash. The root position itself should not draw.
+		// The key is computed by the parent before prefetching this node.
 		if (!root && is_repetition(key, ply)) return 0;
 		
 		const bool in_check_now = in_check(pos);
@@ -197,28 +238,46 @@ namespace Search {
 			depth++;
 		}
 		
-		if (depth <= 0) return quiescence(pos, info, ply, alpha, beta);
+		if (depth <= 0) return quiescence(pos, info, ply, alpha, beta, key);
 		
 		const i32 alpha_orig = alpha;
 		Move tt_move = NullMove;
+		TTEntry* tt_entry = tt.probe(key);
+		i32 tt_score = TT_NO_SCORE;
 		
-		// TT probe reuses the same hash. Do not cut off at root; root must refresh bestmove.
-		if (TTEntry* entry = tt.probe(key)) {
-			tt_move = entry->best_move;
-			if (!root && entry->depth >= depth) {
-				const i32 tt_score = score_from_tt(entry->score, ply);
-				if (entry->flag == TT_EXACT) return tt_score;
-				if (entry->flag == TT_ALPHA && tt_score <= alpha) return tt_score;
-				if (entry->flag == TT_BETA  && tt_score >= beta)  return tt_score;
+		// Do not cut off at root; root must refresh its best move.
+		if (tt_entry) {
+			tt_move = tt_entry->best_move();
+			if (tt_entry->has_score()) {
+				tt_score = score_from_tt(tt_entry->score, ply);
+				if (!root && tt_entry->depth >= depth) {
+					if (tt_entry->flag == TT_EXACT) return tt_score;
+					if (tt_entry->flag == TT_ALPHA && tt_score <= alpha) return tt_score;
+					if (tt_entry->flag == TT_BETA  && tt_score >= beta)  return tt_score;
+				}
 			}
 		}
 		
-		// Static eval, computed once and reused by the pruning heuristics
-		// below. When in check the value is never actually used (every
-		// consumer is guarded by !in_check_now), so a dummy value avoids
-		// paying for a real evaluation in that case.
-		const i32 eval = in_check_now ? 0 : Eval::evaluate(pos);
-		
+		// Reuse the cached raw static evaluation. A compatible TT search score
+		// can then correct it for pruning without replacing the raw value that
+		// is written back to the table.
+		i32 raw_eval = TT_NO_SCORE;
+		i32 eval = 0;
+		if (!in_check_now) {
+			raw_eval = tt_entry && tt_entry->has_static_eval()
+				? tt_entry->static_eval
+				: Eval::evaluate(pos);
+			
+			if (!tt_entry || !tt_entry->has_static_eval())
+				tt.store_eval(key, raw_eval);
+			
+			eval = raw_eval;
+			if (tt_entry && tt_entry->has_score()
+				&& tt_score_can_correct_eval(*tt_entry, tt_score, eval)) {
+				eval = tt_score;
+			}
+		}
+
 		// Reverse Futility Pruning: only in non-PV, not in check, shallow depth.
 		if (!pv_node && !in_check_now && depth <= 8) {
 			const i32 rfp_margin = 88 * depth;
@@ -236,9 +295,11 @@ namespace Search {
 				
 				Position null_pos = pos;
 				null_pos.make_null_move();
+				const u64 null_key = Zobrist::hash(null_pos);
+				tt.prefetch(null_key);
 				
 				const i32 null_score = -negamax(null_pos, info, depth - R, ply + 1,
-					-beta, -beta + 1, false);
+					-beta, -beta + 1, false, null_key);
 				
 				if (stopped.load(std::memory_order_relaxed)) return 0;
 				
@@ -271,6 +332,8 @@ namespace Search {
 			Position next = pos;
 			if (!next.make_move(moves[i])) continue;
 			
+			const u64 child_key = Zobrist::hash(next);
+			tt.prefetch(child_key);
 			const i32 move_index = legal;
 			legal++;
 			info.nodes++;
@@ -293,15 +356,15 @@ namespace Search {
 				const i32 r = reduction[r_idx][std::min(depth, MAX_PLY)];
 				const i32 searched_depth = std::clamp(new_depth - r, 1, new_depth);
 				
-				score = -negamax(next, info, searched_depth, ply + 1, -beta, -alpha, false);
+				score = -negamax(next, info, searched_depth, ply + 1, -beta, -alpha, false, child_key);
 				
 				if (!stopped.load(std::memory_order_relaxed) && score > alpha && searched_depth < new_depth) {
 					// Reduced search failed high, so verify at full depth.
-					score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, child_pv);
+					score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, child_pv, child_key);
 				}
 			}
 			else {
-				score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, child_pv);
+				score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, child_pv, child_key);
 			}
 			
 			if (stopped.load(std::memory_order_relaxed)) break;
@@ -347,7 +410,7 @@ namespace Search {
 			u8 flag = TT_EXACT;
 			if (best <= alpha_orig) flag = TT_ALPHA;
 			else if (best >= beta) flag = TT_BETA;
-			tt.store(key, depth, score_to_tt(best, ply), flag, best_move);
+			tt.store(key, depth, score_to_tt(best, ply), raw_eval, flag, best_move);
 		}
 		
 		return best;
@@ -405,7 +468,7 @@ namespace Search {
 			
 			i32 score;
 			while (true) {
-				score = negamax(pos, info, std::max(asp_depth, 1), 0, alpha, beta, true);
+				score = negamax(pos, info, std::max(asp_depth, 1), 0, alpha, beta, true, root_hash);
 				
 				if (stopped.load(std::memory_order_relaxed)) break;
 				
