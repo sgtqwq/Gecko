@@ -17,6 +17,9 @@ constexpr i32 MAX_MOVES = 256;
 constexpr i32 HISTORY_MAX = 16384;
 constexpr i32 HISTORY_BONUS_MAX = 2000;
 
+// Killer move constants
+constexpr i32 NUM_KILLERS = 2;
+
 // History tables
 struct HistoryTable {
 	i32 quiet_history[2][64][64];  // [color][from][to]
@@ -83,6 +86,7 @@ namespace Search {
 	extern u64 rep_stack[1024];
 	extern i32 game_ply;
 	extern HistoryTable history;
+	extern Move killers[MAX_PLY][NUM_KILLERS];
 	
 	void init();
 	void clear_tables();
