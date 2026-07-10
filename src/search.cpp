@@ -13,7 +13,6 @@ namespace Search {
 	u64 rep_stack[1024]{};
 	i32 game_ply = 0;
 	HistoryTable history;
-	Move killers[MAX_PLY][NUM_KILLERS]{};
 	
 	// LMR reduction table (plies to reduce, already includes base offset).
 	i32 reduction[256][MAX_PLY + 1]{};
@@ -85,78 +84,47 @@ namespace Search {
 				pos.pieces[Rook]   | pos.pieces[Queen])) != 0;
 	}
 	
-	// Records a killer move for the given ply, avoiding duplicate storage.
-	static inline void update_killers(i32 ply, const Move& move) {
-		const i32 kp = std::min(ply, MAX_PLY - 1);
-		if (killers[kp][0] != move) {
-			killers[kp][1] = killers[kp][0];
-			killers[kp][0] = move;
-		}
-	}
-	
-	static void order_moves(const Position& pos, Move* moves, i32 count, Move tt_move = NullMove,
-		bool stm_flipped = false, i32 ply = 0) {
-			i32 scores[MAX_MOVES];
-			
-			const i32 kp = std::min(ply, MAX_PLY - 1);
-			const Move killer1 = killers[kp][0];
-			const Move killer2 = killers[kp][1];
-			
-			for (i32 i = 0; i < count; ++i) {
-				if (moves[i] == tt_move) {
-					scores[i] = 1000000;  // TT move gets highest priority
-				}
-				else if (is_capture(pos, moves[i])) {
-					// Captures scored by MVV-LVA (range: ~10-55)
-					scores[i] = 100000 + mvv_lva_score(pos, moves[i]);
-				}
-				else if (moves[i] == killer1) {
-					// First killer, scored just below captures
-					scores[i] = 90000;
-				}
-				else if (moves[i] == killer2) {
-					// Second killer
-					scores[i] = 89000;
-				}
-				else {
-					// Quiet moves scored by history heuristic
-					scores[i] = history.get_score(stm_flipped, moves[i].from, moves[i].to);
-				}
+	static void order_moves(const Position& pos, Move* moves, i32 count, Move tt_move = NullMove, bool stm_flipped = false) {
+		i32 scores[MAX_MOVES];
+		
+		for (i32 i = 0; i < count; ++i) {
+			if (moves[i] == tt_move) {
+				scores[i] = 1000000;  // TT move gets highest priority
 			}
-			
-			// Insertion sort (descending). Move lists are short, so this is
-			// faster and simpler than std::sort here.
-			for (i32 i = 1; i < count; ++i) {
-				const Move m = moves[i];
-				const i32  s = scores[i];
-				i32 j = i - 1;
-				while (j >= 0 && scores[j] < s) {
-					moves[j + 1]  = moves[j];
-					scores[j + 1] = scores[j];
-					--j;
-				}
-				moves[j + 1]  = m;
-				scores[j + 1] = s;
+			else if (is_capture(pos, moves[i])) {
+				// Captures scored by MVV-LVA (range: ~10-55)
+				scores[i] = 100000 + mvv_lva_score(pos, moves[i]);
+			}
+			else {
+				// Quiet moves scored by history heuristic
+				scores[i] = history.get_score(stm_flipped, moves[i].from, moves[i].to);
 			}
 		}
-	
-	static inline void clear_killers() {
-		for (i32 p = 0; p < MAX_PLY; ++p) {
-			killers[p][0] = NullMove;
-			killers[p][1] = NullMove;
+		
+		// Insertion sort (descending). Move lists are short, so this is
+		// faster and simpler than std::sort here.
+		for (i32 i = 1; i < count; ++i) {
+			const Move m = moves[i];
+			const i32  s = scores[i];
+			i32 j = i - 1;
+			while (j >= 0 && scores[j] < s) {
+				moves[j + 1]  = moves[j];
+				scores[j + 1] = scores[j];
+				--j;
+			}
+			moves[j + 1]  = m;
+			scores[j + 1] = s;
 		}
 	}
 	
 	void init() {
 		stopped.store(false, std::memory_order_relaxed);
 		history.clear();
-		clear_killers();
 		init_lmr();
 	}
 	
 	void clear_tables() {
 		history.clear();
-		clear_killers();
 	}
 	
 	// Optimized: accepts hash directly instead of recalculating
@@ -186,7 +154,7 @@ namespace Search {
 		
 		Move moves[MAX_MOVES];
 		const i32 count = generate_moves(pos, moves, true);
-		order_moves(pos, moves, count, NullMove, pos.flipped, ply);
+		order_moves(pos, moves, count, NullMove, pos.flipped);
 		
 		i32 legal = 0;
 		i32 best = stand_pat;
@@ -215,8 +183,6 @@ namespace Search {
 	static i32 negamax(Position& pos, SearchInfo& info, i32 depth, i32 ply, i32 alpha, i32 beta, bool pv_node) {
 		const bool root = (ply == 0);
 		info.seldepth = std::max(info.seldepth, ply);
-		
-		const i32 kp = std::min(ply, MAX_PLY - 1);
 		
 		// Calculate hash once and reuse it throughout
 		const u64 key = Zobrist::hash(pos);
@@ -292,7 +258,7 @@ namespace Search {
 		
 		Move moves[MAX_MOVES];
 		const i32 count = generate_moves(pos, moves, false);
-		order_moves(pos, moves, count, tt_move, pos.flipped, ply);
+		order_moves(pos, moves, count, tt_move, pos.flipped);
 		
 		i32 legal = 0, best = -INF;
 		Move best_move = NullMove;
@@ -315,8 +281,6 @@ namespace Search {
 			}
 			
 			const bool is_quiet = !is_capture(pos, moves[i]) && moves[i].promo == None;
-			const bool is_killer = is_quiet &&
-			(moves[i] == killers[kp][0] || moves[i] == killers[kp][1]);
 			const i32 new_depth = depth - 1;
 			
 			// A child is a PV node if we're at a PV node and it's the first move
@@ -326,13 +290,7 @@ namespace Search {
 			
 			if (depth >= 2 && move_index >= 1 + 2 * root) {
 				const i32 r_idx = std::min(move_index, 255);
-				i32 r = reduction[r_idx][std::min(depth, MAX_PLY)];
-				
-				// Killer moves are historically good quiets; reduce less.
-				if (is_killer) {
-					r = std::max(0, r - 1);
-				}
-				
+				const i32 r = reduction[r_idx][std::min(depth, MAX_PLY)];
 				const i32 searched_depth = std::clamp(new_depth - r, 1, new_depth);
 				
 				score = -negamax(next, info, searched_depth, ply + 1, -beta, -alpha, false);
@@ -360,7 +318,7 @@ namespace Search {
 			if (best > alpha) {
 				alpha = best;
 				if (alpha >= beta) {
-					// Beta cutoff - update history/killers for the move that caused it
+					// Beta cutoff - update history for the move that caused it
 					if (is_quiet) {
 						const i32 bonus = history_bonus(depth);
 						history.update(pos.flipped, best_move.from, best_move.to, bonus);
@@ -369,8 +327,6 @@ namespace Search {
 						for (i32 j = 0; j < quiets_count; ++j) {
 							history.update(pos.flipped, quiets_tried[j].from, quiets_tried[j].to, -bonus);
 						}
-						
-						update_killers(ply, best_move);
 					}
 					break;
 				}
@@ -424,8 +380,6 @@ namespace Search {
 		stopped.store(false, std::memory_order_relaxed);
 		info.reset();
 		info.start_time = std::chrono::steady_clock::now();
-		
-		clear_killers();
 		
 		// Calculate hash once at root
 		const u64 root_hash = Zobrist::hash(pos);
