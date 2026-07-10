@@ -36,6 +36,11 @@ namespace Search {
 		{0, 0, 0, 0, 0, 0, 0}        // No piece
 	};
 	
+	// Late Move Pruning constants.
+	// Mirrors the reference formula: (LMP_BASE + depth * depth) / (2 - improving).
+	constexpr i32 LMP_BASE      = 3;
+	constexpr i32 LMP_MAX_DEPTH = 8;
+	
 	static inline i32 mvv_lva_score(const Position& pos, const Move& move) {
 		PieceType attacker = pos.piece_on(move.from);
 		PieceType victim   = pos.piece_on(move.to);
@@ -219,6 +224,22 @@ namespace Search {
 		// paying for a real evaluation in that case.
 		const i32 eval = in_check_now ? 0 : Eval::evaluate(pos);
 		
+		// Record the static eval for this ply (or "none" when in check) so
+		// that the improving heuristic below can look 2 plies back, at the
+		// last time it was our turn to move.
+		if (ply < MAX_PLY) {
+			info.static_eval[ply] = in_check_now ? EVAL_NONE : eval;
+		}
+		
+		// Improving: true if our static eval got better compared to the
+		// last time we were on move (2 plies ago). Used to scale down
+		// pruning when our position seems to be getting worse, and prune
+		// more aggressively when it's getting better.
+		bool improving = false;
+		if (!in_check_now && ply >= 2 && info.static_eval[ply - 2] != EVAL_NONE) {
+			improving = eval > info.static_eval[ply - 2];
+		}
+		
 		// Reverse Futility Pruning: only in non-PV, not in check, shallow depth.
 		if (!pv_node && !in_check_now && depth <= 8) {
 			const i32 rfp_margin = 88 * depth;
@@ -266,8 +287,17 @@ namespace Search {
 		// Track quiet moves tried for history updates
 		Move quiets_tried[MAX_MOVES];
 		i32 quiets_count = 0;
-		
+		i32 lmp_count = (LMP_BASE + depth * depth) / (2 - (improving ? 1 : 0));
 		for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {
+			
+			// Late Move Pruning.
+			const bool is_quiet = !is_capture(pos, moves[i]) && moves[i].promo == None;
+			if (!root && is_quiet) {
+				if (legal >= lmp_count) {
+					break;
+				}
+			}
+			
 			Position next = pos;
 			if (!next.make_move(moves[i])) continue;
 			
@@ -280,7 +310,6 @@ namespace Search {
 				stopped.store(true, std::memory_order_relaxed);
 			}
 			
-			const bool is_quiet = !is_capture(pos, moves[i]) && moves[i].promo == None;
 			const i32 new_depth = depth - 1;
 			
 			// A child is a PV node if we're at a PV node and it's the first move

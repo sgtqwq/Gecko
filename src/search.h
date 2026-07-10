@@ -17,6 +17,10 @@ constexpr i32 MAX_MOVES = 256;
 constexpr i32 HISTORY_MAX = 16384;
 constexpr i32 HISTORY_BONUS_MAX = 2000;
 
+// Sentinel used to mark "no static eval available" slots in the per-ply
+// static eval stack (used for the improving heuristic).
+constexpr i32 EVAL_NONE = 32001;
+
 // History tables
 struct HistoryTable {
 	i32 quiet_history[2][64][64];  // [color][from][to]
@@ -56,6 +60,10 @@ struct SearchInfo {
 	Move pv[MAX_PLY];
 	i32 pv_length;
 	
+	// Per-ply static eval stack, used for the "improving" heuristic.
+	// Indexed directly by ply (reset every search() call).
+	i32 static_eval[MAX_PLY];
+	
 	std::chrono::steady_clock::time_point start_time;
 	i64 soft_time_limit;
 	i64 time_limit;
@@ -63,13 +71,16 @@ struct SearchInfo {
 	
 	SearchInfo()
 	: nodes(0), depth(0), seldepth(0), pv_length(0),
-	soft_time_limit(0), time_limit(0), infinite(true) {}
+	soft_time_limit(0), time_limit(0), infinite(true) {
+		for (i32 i = 0; i < MAX_PLY; ++i) static_eval[i] = EVAL_NONE;
+	}
 	
 	void reset() {
 		nodes = 0;
 		depth = 0;
 		seldepth = 0;
 		pv_length = 0;
+		for (i32 i = 0; i < MAX_PLY; ++i) static_eval[i] = EVAL_NONE;
 	}
 	
 	i64 elapsed_time() const {
