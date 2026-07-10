@@ -287,12 +287,18 @@ namespace Search {
 		// Track quiet moves tried for history updates
 		Move quiets_tried[MAX_MOVES];
 		i32 quiets_count = 0;
-		i32 lmp_count = (LMP_BASE + depth * depth) / (2 - (improving ? 1 : 0));
+		
 		for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {
 			
 			// Late Move Pruning.
-			const bool is_quiet = !is_capture(pos, moves[i]) && moves[i].promo == None;
-			if (!root && is_quiet) {
+			//
+			// Moves are ordered best-first (TT move, then captures by
+			// MVV-LVA, then quiets by history). Once we've already tried
+			// enough moves at a shallow depth without a cutoff, the
+			// remaining (badly-ordered) moves are extremely unlikely to
+			// matter, so we stop searching this node's move list entirely.
+			if (!pv_node && !in_check_now && depth <= LMP_MAX_DEPTH) {
+				const i32 lmp_count = (LMP_BASE + depth * depth) / (2 - (improving ? 1 : 0));
 				if (legal >= lmp_count) {
 					break;
 				}
@@ -310,6 +316,7 @@ namespace Search {
 				stopped.store(true, std::memory_order_relaxed);
 			}
 			
+			const bool is_quiet = !is_capture(pos, moves[i]) && moves[i].promo == None;
 			const i32 new_depth = depth - 1;
 			
 			// A child is a PV node if we're at a PV node and it's the first move
