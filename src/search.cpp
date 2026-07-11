@@ -97,7 +97,7 @@ namespace Search {
 	// is looser when the side to move is "improving", since there's more
 	// reason to believe a later quiet move could still matter.
 	static inline i32 lmp_threshold(i32 depth, bool improving) {
-		return improving ? (4 + 2 * depth * depth) : (3 + depth * depth);
+		return 1 + depth * depth >> !improving;
 	}
 	
 	static void order_moves(const Position& pos, Move* moves, i32 count, i32 ply,
@@ -393,9 +393,8 @@ namespace Search {
 				// searched at this node (and we're not in a PV node or in
 				// check), skip remaining quiet moves outright. Looser when
 				// improving, tighter when not.
-				if (!root && !pv_node && !in_check_now && is_quiet &&
-					depth <= 8 && move_index >= lmp_threshold(depth, improving)) {
-					continue;
+				if (!root && is_quiet && move_index >= lmp_threshold(depth, improving)) {
+					break;
 				}
 				
 				const i32 new_depth = depth - 1;
