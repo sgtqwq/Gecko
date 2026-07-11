@@ -470,7 +470,7 @@ namespace Search {
 			info.pv_length = best.is_none() ? 0 : 1;
 			
 			// Aspiration window search around the previous score.
-			i32 delta     = 25;
+			i32 delta     = 18;
 			i32 alpha     = -INF;
 			i32 beta      = INF;
 			i32 asp_depth = depth;
