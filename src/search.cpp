@@ -327,7 +327,7 @@ namespace Search {
 				const i32 rfp_margin = 88 * (depth - static_cast<i32>(improving));
 				
 				if (eval - rfp_margin >= beta) {
-					return eval - rfp_margin;
+					return (eval + beta) / 2;
 				}
 			}
 			
@@ -393,9 +393,9 @@ namespace Search {
 				// searched at this node (and we're not in a PV node or in
 				// check), skip remaining quiet moves outright. Looser when
 				// improving, tighter when not.
-				if (!root && is_quiet && move_index >= lmp_threshold(depth, improving)) {
-					break;
-				}
+//				if (!root && is_quiet && move_index >= lmp_threshold(depth, improving)) {
+//					break;
+//				}
 				
 				const i32 new_depth = depth - 1;
 				
