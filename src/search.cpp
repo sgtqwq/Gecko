@@ -13,6 +13,7 @@ namespace Search {
 	u64 rep_stack[1024]{};
 	i32 game_ply = 0;
 	HistoryTable history;
+	KillerTable killers;
 	
 	// LMR reduction table (plies to reduce, already includes base offset).
 	i32 reduction[256][MAX_PLY + 1]{};
@@ -84,47 +85,59 @@ namespace Search {
 				pos.pieces[Rook]   | pos.pieces[Queen])) != 0;
 	}
 	
-	static void order_moves(const Position& pos, Move* moves, i32 count, Move tt_move = NullMove, bool stm_flipped = false) {
-		i32 scores[MAX_MOVES];
-		
-		for (i32 i = 0; i < count; ++i) {
-			if (moves[i] == tt_move) {
-				scores[i] = 1000000;  // TT move gets highest priority
+	static void order_moves(const Position& pos, Move* moves, i32 count, i32 ply,
+		Move tt_move = NullMove, bool stm_flipped = false) {
+			i32 scores[MAX_MOVES];
+			
+			const Move killer1 = (ply >= 0 && ply < MAX_PLY) ? killers.killers[ply][0] : NullMove;
+			const Move killer2 = (ply >= 0 && ply < MAX_PLY) ? killers.killers[ply][1] : NullMove;
+			
+			for (i32 i = 0; i < count; ++i) {
+				if (moves[i] == tt_move) {
+					scores[i] = 1000000;  // TT move gets highest priority
+				}
+				else if (is_capture(pos, moves[i])) {
+					// Captures scored by MVV-LVA (range: ~10-55)
+					scores[i] = 100000 + mvv_lva_score(pos, moves[i]);
+				}
+				else if (moves[i] == killer1) {
+					scores[i] = 90000;    // Primary killer, above ordinary history
+				}
+				else if (moves[i] == killer2) {
+					scores[i] = 89000;    // Secondary killer
+				}
+				else {
+					// Quiet moves scored by history heuristic
+					scores[i] = history.get_score(stm_flipped, moves[i].from, moves[i].to);
+				}
 			}
-			else if (is_capture(pos, moves[i])) {
-				// Captures scored by MVV-LVA (range: ~10-55)
-				scores[i] = 100000 + mvv_lva_score(pos, moves[i]);
-			}
-			else {
-				// Quiet moves scored by history heuristic
-				scores[i] = history.get_score(stm_flipped, moves[i].from, moves[i].to);
+			
+			// Insertion sort (descending). Move lists are short, so this is
+			// faster and simpler than std::sort here.
+			for (i32 i = 1; i < count; ++i) {
+				const Move m = moves[i];
+				const i32  s = scores[i];
+				i32 j = i - 1;
+				while (j >= 0 && scores[j] < s) {
+					moves[j + 1]  = moves[j];
+					scores[j + 1] = scores[j];
+					--j;
+				}
+				moves[j + 1]  = m;
+				scores[j + 1] = s;
 			}
 		}
-		
-		// Insertion sort (descending). Move lists are short, so this is
-		// faster and simpler than std::sort here.
-		for (i32 i = 1; i < count; ++i) {
-			const Move m = moves[i];
-			const i32  s = scores[i];
-			i32 j = i - 1;
-			while (j >= 0 && scores[j] < s) {
-				moves[j + 1]  = moves[j];
-				scores[j + 1] = scores[j];
-				--j;
-			}
-			moves[j + 1]  = m;
-			scores[j + 1] = s;
-		}
-	}
 	
 	void init() {
 		stopped.store(false, std::memory_order_relaxed);
 		history.clear();
+		killers.clear();
 		init_lmr();
 	}
 	
 	void clear_tables() {
 		history.clear();
+		killers.clear();
 	}
 	
 	// Optimized: accepts hash directly instead of recalculating
@@ -170,8 +183,8 @@ namespace Search {
 		}
 		
 		const i32 raw_eval = entry && entry->has_static_eval()
-			? entry->static_eval
-			: Eval::evaluate(pos);
+		? entry->static_eval
+		: Eval::evaluate(pos);
 		
 		if (!entry || !entry->has_static_eval())
 			tt.store_eval(key, raw_eval);
@@ -185,7 +198,7 @@ namespace Search {
 		
 		Move moves[MAX_MOVES];
 		const i32 count = generate_moves(pos, moves, true);
-		order_moves(pos, moves, count, tt_move, pos.flipped);
+		order_moves(pos, moves, count, ply, tt_move, pos.flipped);
 		
 		i32 best = stand_pat;
 		Move best_move = NullMove;
@@ -222,199 +235,200 @@ namespace Search {
 		
 		return best;
 	}
-
+	
 	static i32 negamax(Position& pos, SearchInfo& info, i32 depth, i32 ply,
 		i32 alpha, i32 beta, bool pv_node, u64 key) {
-		const bool root = (ply == 0);
-		info.seldepth = std::max(info.seldepth, ply);
-		
-		// The key is computed by the parent before prefetching this node.
-		if (!root && is_repetition(key, ply)) return 0;
-		
-		const bool in_check_now = in_check(pos);
-		
-		// Check extension: extend search by 1 ply when in check
-		if (in_check_now && depth < MAX_PLY - 1) {
-			depth++;
-		}
-		
-		if (depth <= 0) return quiescence(pos, info, ply, alpha, beta, key);
-		
-		const i32 alpha_orig = alpha;
-		Move tt_move = NullMove;
-		TTEntry* tt_entry = tt.probe(key);
-		i32 tt_score = TT_NO_SCORE;
-		
-		// Do not cut off at root; root must refresh its best move.
-		if (tt_entry) {
-			tt_move = tt_entry->best_move();
-			if (tt_entry->has_score()) {
-				tt_score = score_from_tt(tt_entry->score, ply);
-				if (!root && tt_entry->depth >= depth) {
-					if (tt_entry->flag == TT_EXACT) return tt_score;
-					if (tt_entry->flag == TT_ALPHA && tt_score <= alpha) return tt_score;
-					if (tt_entry->flag == TT_BETA  && tt_score >= beta)  return tt_score;
+			const bool root = (ply == 0);
+			info.seldepth = std::max(info.seldepth, ply);
+			
+			// The key is computed by the parent before prefetching this node.
+			if (!root && is_repetition(key, ply)) return 0;
+			
+			const bool in_check_now = in_check(pos);
+			
+			// Check extension: extend search by 1 ply when in check
+			if (in_check_now && depth < MAX_PLY - 1) {
+				depth++;
+			}
+			
+			if (depth <= 0) return quiescence(pos, info, ply, alpha, beta, key);
+			
+			const i32 alpha_orig = alpha;
+			Move tt_move = NullMove;
+			TTEntry* tt_entry = tt.probe(key);
+			i32 tt_score = TT_NO_SCORE;
+			
+			// Do not cut off at root; root must refresh its best move.
+			if (tt_entry) {
+				tt_move = tt_entry->best_move();
+				if (tt_entry->has_score()) {
+					tt_score = score_from_tt(tt_entry->score, ply);
+					if (!root && tt_entry->depth >= depth) {
+						if (tt_entry->flag == TT_EXACT) return tt_score;
+						if (tt_entry->flag == TT_ALPHA && tt_score <= alpha) return tt_score;
+						if (tt_entry->flag == TT_BETA  && tt_score >= beta)  return tt_score;
+					}
 				}
 			}
-		}
-		
-		// Reuse the cached raw static evaluation. A compatible TT search score
-		// can then correct it for pruning without replacing the raw value that
-		// is written back to the table.
-		i32 raw_eval = TT_NO_SCORE;
-		i32 eval = 0;
-		if (!in_check_now) {
-			raw_eval = tt_entry && tt_entry->has_static_eval()
+			
+			// Reuse the cached raw static evaluation. A compatible TT search score
+			// can then correct it for pruning without replacing the raw value that
+			// is written back to the table.
+			i32 raw_eval = TT_NO_SCORE;
+			i32 eval = 0;
+			if (!in_check_now) {
+				raw_eval = tt_entry && tt_entry->has_static_eval()
 				? tt_entry->static_eval
 				: Eval::evaluate(pos);
-			
-			if (!tt_entry || !tt_entry->has_static_eval())
-				tt.store_eval(key, raw_eval);
-			
-			eval = raw_eval;
-			if (tt_entry && tt_entry->has_score()
-				&& tt_score_can_correct_eval(*tt_entry, tt_score, eval)) {
-				eval = tt_score;
-			}
-		}
-
-		// Reverse Futility Pruning: only in non-PV, not in check, shallow depth.
-		if (!pv_node && !in_check_now && depth <= 8) {
-			const i32 rfp_margin = 88 * depth;
-			
-			if (eval - rfp_margin >= beta) {
-				return eval - rfp_margin;
-			}
-		}
-		
-		// Null Move Pruning: only in non-PV, not in check, sufficient depth,
-		// and not in a (near-)pure pawn ending where zugzwang is likely.
-		if (!pv_node && !in_check_now && depth >= 3 && has_non_pawn_material(pos)) {
-			if (eval >= beta + 25) {
-				const i32 R = 4 + depth / 3;
 				
-				Position null_pos = pos;
-				null_pos.make_null_move();
-				const u64 null_key = Zobrist::hash(null_pos);
-				tt.prefetch(null_key);
+				if (!tt_entry || !tt_entry->has_static_eval())
+					tt.store_eval(key, raw_eval);
 				
-				const i32 null_score = -negamax(null_pos, info, depth - R, ply + 1,
-					-beta, -beta + 1, false, null_key);
-				
-				if (stopped.load(std::memory_order_relaxed)) return 0;
-				
-				if (null_score >= beta) {
-					// Do not trust mate scores returned by a null-move search;
-					// they are not verified and can be "fake" mates.
-					if (null_score >= MATE_SCORE - MAX_PLY) {
-						return beta;
-					}
-					return null_score;
+				eval = raw_eval;
+				if (tt_entry && tt_entry->has_score()
+					&& tt_score_can_correct_eval(*tt_entry, tt_score, eval)) {
+					eval = tt_score;
 				}
 			}
-		}
-		
-		// Store hash in repetition stack (already computed)
-		rep_stack[game_ply + ply] = key;
-		
-		Move moves[MAX_MOVES];
-		const i32 count = generate_moves(pos, moves, false);
-		order_moves(pos, moves, count, tt_move, pos.flipped);
-		
-		i32 legal = 0, best = -INF;
-		Move best_move = NullMove;
-		
-		// Track quiet moves tried for history updates
-		Move quiets_tried[MAX_MOVES];
-		i32 quiets_count = 0;
-		
-		for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {
-			Position next = pos;
-			if (!next.make_move(moves[i])) continue;
 			
-			const u64 child_key = Zobrist::hash(next);
-			tt.prefetch(child_key);
-			const i32 move_index = legal;
-			legal++;
-			info.nodes++;
-			
-			if ((info.nodes & 2047) == 0 && !info.infinite &&
-				info.elapsed_time() >= info.time_limit) {
-				stopped.store(true, std::memory_order_relaxed);
+			// Reverse Futility Pruning: only in non-PV, not in check, shallow depth.
+			if (!pv_node && !in_check_now && depth <= 8) {
+				const i32 rfp_margin = 88 * depth;
+				
+				if (eval - rfp_margin >= beta) {
+					return eval - rfp_margin;
+				}
 			}
 			
-			const bool is_quiet = !is_capture(pos, moves[i]) && moves[i].promo == None;
-			const i32 new_depth = depth - 1;
+			// Null Move Pruning: only in non-PV, not in check, sufficient depth,
+			// and not in a (near-)pure pawn ending where zugzwang is likely.
+			if (!pv_node && !in_check_now && depth >= 3 && has_non_pawn_material(pos)) {
+				if (eval >= beta + 25) {
+					const i32 R = 4 + depth / 3;
+					
+					Position null_pos = pos;
+					null_pos.make_null_move();
+					const u64 null_key = Zobrist::hash(null_pos);
+					tt.prefetch(null_key);
+					
+					const i32 null_score = -negamax(null_pos, info, depth - R, ply + 1,
+						-beta, -beta + 1, false, null_key);
+					
+					if (stopped.load(std::memory_order_relaxed)) return 0;
+					
+					if (null_score >= beta) {
+						// Do not trust mate scores returned by a null-move search;
+						// they are not verified and can be "fake" mates.
+						if (null_score >= MATE_SCORE - MAX_PLY) {
+							return beta;
+						}
+						return null_score;
+					}
+				}
+			}
 			
-			// A child is a PV node if we're at a PV node and it's the first move
-			const bool child_pv = pv_node && (move_index == 0);
+			// Store hash in repetition stack (already computed)
+			rep_stack[game_ply + ply] = key;
 			
-			i32 score;
+			Move moves[MAX_MOVES];
+			const i32 count = generate_moves(pos, moves, false);
+			order_moves(pos, moves, count, ply, tt_move, pos.flipped);
 			
-			if (depth >= 2 && move_index >= 1 + 2 * root) {
-				const i32 r_idx = std::min(move_index, 255);
-				const i32 r = reduction[r_idx][std::min(depth, MAX_PLY)];
-				const i32 searched_depth = std::clamp(new_depth - r, 1, new_depth);
+			i32 legal = 0, best = -INF;
+			Move best_move = NullMove;
+			
+			// Track quiet moves tried for history updates
+			Move quiets_tried[MAX_MOVES];
+			i32 quiets_count = 0;
+			
+			for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {
+				Position next = pos;
+				if (!next.make_move(moves[i])) continue;
 				
-				score = -negamax(next, info, searched_depth, ply + 1, -beta, -alpha, false, child_key);
+				const u64 child_key = Zobrist::hash(next);
+				tt.prefetch(child_key);
+				const i32 move_index = legal;
+				legal++;
+				info.nodes++;
 				
-				if (!stopped.load(std::memory_order_relaxed) && score > alpha && searched_depth < new_depth) {
-					// Reduced search failed high, so verify at full depth.
+				if ((info.nodes & 2047) == 0 && !info.infinite &&
+					info.elapsed_time() >= info.time_limit) {
+					stopped.store(true, std::memory_order_relaxed);
+				}
+				
+				const bool is_quiet = !is_capture(pos, moves[i]) && moves[i].promo == None;
+				const i32 new_depth = depth - 1;
+				
+				// A child is a PV node if we're at a PV node and it's the first move
+				const bool child_pv = pv_node && (move_index == 0);
+				
+				i32 score;
+				
+				if (depth >= 2 && move_index >= 1 + 2 * root) {
+					const i32 r_idx = std::min(move_index, 255);
+					const i32 r = reduction[r_idx][std::min(depth, MAX_PLY)];
+					const i32 searched_depth = std::clamp(new_depth - r, 1, new_depth);
+					
+					score = -negamax(next, info, searched_depth, ply + 1, -beta, -alpha, false, child_key);
+					
+					if (!stopped.load(std::memory_order_relaxed) && score > alpha && searched_depth < new_depth) {
+						// Reduced search failed high, so verify at full depth.
+						score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, child_pv, child_key);
+					}
+				}
+				else {
 					score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, child_pv, child_key);
 				}
-			}
-			else {
-				score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, child_pv, child_key);
-			}
-			
-			if (stopped.load(std::memory_order_relaxed)) break;
-			
-			if (score > best) {
-				best = score;
-				best_move = moves[i];
-				if (root) {
-					info.pv[0] = best_move;
-					info.pv_length = 1;
-				}
-			}
-			
-			if (best > alpha) {
-				alpha = best;
-				if (alpha >= beta) {
-					// Beta cutoff - update history for the move that caused it
-					if (is_quiet) {
-						const i32 bonus = history_bonus(depth);
-						history.update(pos.flipped, best_move.from, best_move.to, bonus);
-						
-						// Penalize other quiets that were tried before the cutoff
-						for (i32 j = 0; j < quiets_count; ++j) {
-							history.update(pos.flipped, quiets_tried[j].from, quiets_tried[j].to, -bonus);
-						}
+				
+				if (stopped.load(std::memory_order_relaxed)) break;
+				
+				if (score > best) {
+					best = score;
+					best_move = moves[i];
+					if (root) {
+						info.pv[0] = best_move;
+						info.pv_length = 1;
 					}
-					break;
+				}
+				
+				if (best > alpha) {
+					alpha = best;
+					if (alpha >= beta) {
+						// Beta cutoff - update history and killers for the move that caused it
+						if (is_quiet) {
+							const i32 bonus = history_bonus(depth);
+							history.update(pos.flipped, best_move.from, best_move.to, bonus);
+							killers.update(ply, best_move);
+							
+							// Penalize other quiets that were tried before the cutoff
+							for (i32 j = 0; j < quiets_count; ++j) {
+								history.update(pos.flipped, quiets_tried[j].from, quiets_tried[j].to, -bonus);
+							}
+						}
+						break;
+					}
+				}
+				
+				// Track quiet moves for later penalty if we get a cutoff
+				if (is_quiet && quiets_count < MAX_MOVES) {
+					quiets_tried[quiets_count++] = moves[i];
 				}
 			}
 			
-			// Track quiet moves for later penalty if we get a cutoff
-			if (is_quiet && quiets_count < MAX_MOVES) {
-				quiets_tried[quiets_count++] = moves[i];
+			if (legal == 0) {
+				// Checkmate or stalemate
+				return in_check_now ? -MATE_SCORE + ply : 0;
 			}
+			
+			if (!stopped.load(std::memory_order_relaxed)) {
+				u8 flag = TT_EXACT;
+				if (best <= alpha_orig) flag = TT_ALPHA;
+				else if (best >= beta) flag = TT_BETA;
+				tt.store(key, depth, score_to_tt(best, ply), raw_eval, flag, best_move);
+			}
+			
+			return best;
 		}
-		
-		if (legal == 0) {
-			// Checkmate or stalemate
-			return in_check_now ? -MATE_SCORE + ply : 0;
-		}
-		
-		if (!stopped.load(std::memory_order_relaxed)) {
-			u8 flag = TT_EXACT;
-			if (best <= alpha_orig) flag = TT_ALPHA;
-			else if (best >= beta) flag = TT_BETA;
-			tt.store(key, depth, score_to_tt(best, ply), raw_eval, flag, best_move);
-		}
-		
-		return best;
-	}
 	
 	static void report_uci_info(SearchInfo& info, const Position& pos, Move best, i32 score, i32 depth, bool is_lowerbound = false, bool is_upperbound = false) {
 		const i64 elapsed = info.elapsed_time();

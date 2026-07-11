@@ -49,6 +49,37 @@ struct HistoryTable {
 	}
 };
 
+// Killer move table: stores up to two "killer" quiet moves per ply.
+// A killer move is a quiet move that caused a beta cutoff at a given ply;
+// it is likely to be strong in sibling nodes at the same ply as well.
+struct KillerTable {
+	Move killers[MAX_PLY][2];
+	
+	KillerTable() {
+		clear();
+	}
+	
+	void clear() {
+		for (i32 i = 0; i < MAX_PLY; ++i) {
+			killers[i][0] = NullMove;
+			killers[i][1] = NullMove;
+		}
+	}
+	
+	// Insert a new killer at this ply, keeping the two most recent distinct moves.
+	void update(i32 ply, Move move) {
+		if (ply < 0 || ply >= MAX_PLY) return;
+		if (killers[ply][0] == move) return; // already the primary killer
+		killers[ply][1] = killers[ply][0];
+		killers[ply][0] = move;
+	}
+	
+	bool is_killer(i32 ply, const Move& move) const {
+		if (ply < 0 || ply >= MAX_PLY) return false;
+		return killers[ply][0] == move || killers[ply][1] == move;
+	}
+};
+
 struct SearchInfo {
 	u64 nodes;
 	i32 depth;
@@ -83,6 +114,7 @@ namespace Search {
 	extern u64 rep_stack[1024];
 	extern i32 game_ply;
 	extern HistoryTable history;
+	extern KillerTable killers;
 	
 	void init();
 	void clear_tables();
