@@ -18,6 +18,13 @@ namespace Search {
 	// LMR reduction table (plies to reduce, already includes base offset).
 	i32 reduction[256][MAX_PLY + 1]{};
 	
+	// Per-ply static eval stack, used to determine whether the side to move
+	// is "improving" (its static eval got better since its last move).
+	// A value of NO_EVAL means "no static eval available at this ply"
+	// (e.g. because the side to move was in check).
+	constexpr i32 NO_EVAL = -INF - 100;
+	static i32 eval_stack[MAX_PLY + 8];
+	
 	static void init_lmr() {
 		for (i32 i = 1; i < 256; ++i) {
 			for (i32 d = 1; d <= MAX_PLY; ++d) {
@@ -83,6 +90,14 @@ namespace Search {
 		return (pos.colour[0] &
 			(pos.pieces[Knight] | pos.pieces[Bishop] |
 				pos.pieces[Rook]   | pos.pieces[Queen])) != 0;
+	}
+	
+	// Late Move Pruning: once this many quiet moves have been searched at a
+	// given depth, remaining quiet moves are skipped outright. The threshold
+	// is looser when the side to move is "improving", since there's more
+	// reason to believe a later quiet move could still matter.
+	static inline i32 lmp_threshold(i32 depth, bool improving) {
+		return improving ? (4 + 2 * depth * depth) : (3 + depth * depth);
 	}
 	
 	static void order_moves(const Position& pos, Move* moves, i32 count, i32 ply,
@@ -291,9 +306,25 @@ namespace Search {
 				}
 			}
 			
+			// Record this ply's static eval (or "none" if in check) so that
+			// descendants two plies deeper (our own next move) can tell
+			// whether our position is "improving".
+			if (ply >= 0 && ply < MAX_PLY) {
+				eval_stack[ply] = in_check_now ? NO_EVAL : eval;
+			}
+			
+			// Improving: true if our static eval got better since the last
+			// time it was our turn to move (two plies ago). If we're in
+			// check now, or we were in check two plies ago (no eval
+			// available then), we conservatively treat it as not improving.
+			const bool improving = !in_check_now && ply >= 2
+			&& ply - 2 < MAX_PLY
+			&& eval_stack[ply - 2] != NO_EVAL
+			&& eval > eval_stack[ply - 2];
+			
 			// Reverse Futility Pruning: only in non-PV, not in check, shallow depth.
 			if (!pv_node && !in_check_now && depth <= 8) {
-				const i32 rfp_margin = 88 * depth;
+				const i32 rfp_margin = 88 * (depth - static_cast<i32>(improving));
 				
 				if (eval - rfp_margin >= beta) {
 					return eval - rfp_margin;
@@ -357,6 +388,16 @@ namespace Search {
 				}
 				
 				const bool is_quiet = !is_capture(pos, moves[i]) && moves[i].promo == None;
+				
+				// Late Move Pruning: once enough quiet moves have already been
+				// searched at this node (and we're not in a PV node or in
+				// check), skip remaining quiet moves outright. Looser when
+				// improving, tighter when not.
+				if (!root && !pv_node && !in_check_now && is_quiet &&
+					depth <= 8 && move_index >= lmp_threshold(depth, improving)) {
+					continue;
+				}
+				
 				const i32 new_depth = depth - 1;
 				
 				// A child is a PV node if we're at a PV node and it's the first move
@@ -366,7 +407,9 @@ namespace Search {
 				
 				if (depth >= 2 && move_index >= 1 + 2 * root) {
 					const i32 r_idx = std::min(move_index, 255);
-					const i32 r = reduction[r_idx][std::min(depth, MAX_PLY)];
+					i32 r = reduction[r_idx][std::min(depth, MAX_PLY)];
+//					if (!improving) r++;
+					r = std::max(r, 0);
 					const i32 searched_depth = std::clamp(new_depth - r, 1, new_depth);
 					
 					score = -negamax(next, info, searched_depth, ply + 1, -beta, -alpha, false, child_key);
@@ -457,6 +500,9 @@ namespace Search {
 		stopped.store(false, std::memory_order_relaxed);
 		info.reset();
 		info.start_time = std::chrono::steady_clock::now();
+		
+		// Reset the improving-detection eval stack for a fresh search.
+		std::fill(std::begin(eval_stack), std::end(eval_stack), NO_EVAL);
 		
 		// Calculate hash once at root
 		const u64 root_hash = Zobrist::hash(pos);
