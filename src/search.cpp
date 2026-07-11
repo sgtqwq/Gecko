@@ -296,7 +296,7 @@ namespace Search {
 				const i32 rfp_margin = 88 * depth;
 				
 				if (eval - rfp_margin >= beta) {
-					return eval - rfp_margin;
+					return (eval + beta) / 2;
 				}
 			}
 			
