@@ -270,7 +270,9 @@ namespace Search {
 					}
 				}
 			}
-			
+			if (depth >= 3 && tt_move == NullMove) {
+				depth--;
+			}
 			// Reuse the cached raw static evaluation. A compatible TT search score
 			// can then correct it for pruning without replacing the raw value that
 			// is written back to the table.
