@@ -335,6 +335,18 @@ namespace Search {
 			i32 quiets_count = 0;
 			
 			for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {
+				const bool is_quiet = !is_capture(pos, moves[i]) && moves[i].promo == None;
+				const i32 new_depth = depth - 1;
+				
+				if (!pv_node
+					&& !in_check_now
+					&& is_quiet
+					&& depth <= 5
+					&& legal > 1
+					&& eval + 200 + 90 * depth <= alpha) {
+					break;
+				}
+				
 				Position next = pos;
 				if (!next.make_move(moves[i])) continue;
 				
@@ -348,9 +360,6 @@ namespace Search {
 					info.elapsed_time() >= info.time_limit) {
 					stopped.store(true, std::memory_order_relaxed);
 				}
-				
-				const bool is_quiet = !is_capture(pos, moves[i]) && moves[i].promo == None;
-				const i32 new_depth = depth - 1;
 				
 				const bool child_pv = pv_node && (move_index == 0);
 				
