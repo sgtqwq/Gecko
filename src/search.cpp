@@ -15,7 +15,6 @@ namespace Search {
 	HistoryTable history;
 	KillerTable killers;
 	
-	// LMR reduction table (plies to reduce, already includes base offset).
 	i32 reduction[256][MAX_PLY + 1]{};
 	
 	static void init_lmr() {
@@ -28,20 +27,19 @@ namespace Search {
 	
 	// PNBRQKX (X = no piece)
 	constexpr i32 MVV_LVA[7][7] = {
-		{15, 14, 13, 12, 11, 10, 0}, // Taking a pawn
-		{25, 24, 23, 22, 21, 20, 0}, // Taking a knight
-		{35, 34, 33, 32, 31, 30, 0}, // Taking a bishop
-		{45, 44, 43, 42, 41, 40, 0}, // Taking a rook
-		{55, 54, 53, 52, 51, 50, 0}, // Taking a queen
-		{0, 0, 0, 0, 0, 0, 0},       // Taking a king (should never happen)
-		{0, 0, 0, 0, 0, 0, 0}        // No piece
+		{15, 14, 13, 12, 11, 10, 0},
+		{25, 24, 23, 22, 21, 20, 0},
+		{35, 34, 33, 32, 31, 30, 0},
+		{45, 44, 43, 42, 41, 40, 0},
+		{55, 54, 53, 52, 51, 50, 0},
+		{0, 0, 0, 0, 0, 0, 0},
+		{0, 0, 0, 0, 0, 0, 0}
 	};
 	
 	static inline i32 mvv_lva_score(const Position& pos, const Move& move) {
 		PieceType attacker = pos.piece_on(move.from);
 		PieceType victim   = pos.piece_on(move.to);
 		
-		// Handle en passant: the "to" square is empty, but it's still a capture.
 		if (victim == None && attacker == Pawn && pos.ep && BB::square_bb(move.to) == pos.ep) {
 			victim = Pawn;
 		}
@@ -50,9 +48,7 @@ namespace Search {
 	}
 	
 	static inline bool is_capture(const Position& pos, const Move& move) {
-		// Normal capture
 		if (pos.piece_on(move.to) != None) return true;
-		// En passant
 		if (pos.piece_on(move.from) == Pawn && pos.ep && BB::square_bb(move.to) == pos.ep) return true;
 		return false;
 	}
@@ -69,7 +65,6 @@ namespace Search {
 		return score;
 	}
 	
-	// Calculate history bonus based on depth
 	static inline i32 history_bonus(i32 depth) {
 		return std::min(HISTORY_BONUS_MAX, depth * depth + depth * 2);
 	}
@@ -94,26 +89,22 @@ namespace Search {
 			
 			for (i32 i = 0; i < count; ++i) {
 				if (moves[i] == tt_move) {
-					scores[i] = 1000000;  // TT move gets highest priority
+					scores[i] = 1000000;
 				}
 				else if (is_capture(pos, moves[i])) {
-					// Captures scored by MVV-LVA (range: ~10-55)
 					scores[i] = 100000 + mvv_lva_score(pos, moves[i]);
 				}
 				else if (moves[i] == killer1) {
-					scores[i] = 90000;    // Primary killer, above ordinary history
+					scores[i] = 90000;
 				}
 				else if (moves[i] == killer2) {
-					scores[i] = 89000;    // Secondary killer
+					scores[i] = 89000;
 				}
 				else {
-					// Quiet moves scored by history heuristic
 					scores[i] = history.get_score(stm_flipped, moves[i].from, moves[i].to);
 				}
 			}
 			
-			// Insertion sort (descending). Move lists are short, so this is
-			// faster and simpler than std::sort here.
 			for (i32 i = 1; i < count; ++i) {
 				const Move m = moves[i];
 				const i32  s = scores[i];
@@ -140,7 +131,6 @@ namespace Search {
 		killers.clear();
 	}
 	
-	// Optimized: accepts hash directly instead of recalculating
 	bool is_repetition(u64 hash, i32 ply) {
 		i32 count = 0;
 		for (i32 i = game_ply + ply - 2; i >= 0; i -= 2) {
@@ -241,12 +231,10 @@ namespace Search {
 			const bool root = (ply == 0);
 			info.seldepth = std::max(info.seldepth, ply);
 			
-			// The key is computed by the parent before prefetching this node.
 			if (!root && is_repetition(key, ply)) return 0;
 			
 			const bool in_check_now = in_check(pos);
 			
-			// Check extension: extend search by 1 ply when in check
 			if (in_check_now && depth < MAX_PLY - 1) {
 				depth++;
 			}
@@ -258,7 +246,6 @@ namespace Search {
 			TTEntry* tt_entry = tt.probe(key);
 			i32 tt_score = TT_NO_SCORE;
 			
-			// Do not cut off at root; root must refresh its best move.
 			if (tt_entry) {
 				tt_move = tt_entry->best_move();
 				if (tt_entry->has_score()) {
@@ -270,12 +257,11 @@ namespace Search {
 					}
 				}
 			}
+			
 			if (depth >= 3 && tt_move == NullMove) {
 				depth--;
 			}
-			// Reuse the cached raw static evaluation. A compatible TT search score
-			// can then correct it for pruning without replacing the raw value that
-			// is written back to the table.
+			
 			i32 raw_eval = TT_NO_SCORE;
 			i32 eval = 0;
 			if (!in_check_now) {
@@ -293,17 +279,26 @@ namespace Search {
 				}
 			}
 			
-			// Reverse Futility Pruning: only in non-PV, not in check, shallow depth.
+			// Razoring
+			if (!pv_node
+				&& !in_check_now
+				&& depth <= 7
+				&& eval + 320 * depth < alpha) {
+				const i32 razor_score = quiescence(pos, info, ply, alpha, beta, key);
+				if (razor_score <= alpha) {
+					return razor_score;
+				}
+			}
+			
+			// Reverse Futility Pruning
 			if (!pv_node && !in_check_now && depth <= 8) {
 				const i32 rfp_margin = 88 * depth;
-				
 				if (eval - rfp_margin >= beta) {
 					return (eval + beta) / 2;
 				}
 			}
 			
-			// Null Move Pruning: only in non-PV, not in check, sufficient depth,
-			// and not in a (near-)pure pawn ending where zugzwang is likely.
+			// Null Move Pruning
 			if (!pv_node && !in_check_now && depth >= 3 && has_non_pawn_material(pos)) {
 				if (eval >= beta + 25) {
 					const i32 R = 4 + depth / 3;
@@ -319,8 +314,6 @@ namespace Search {
 					if (stopped.load(std::memory_order_relaxed)) return 0;
 					
 					if (null_score >= beta) {
-						// Do not trust mate scores returned by a null-move search;
-						// they are not verified and can be "fake" mates.
 						if (null_score >= MATE_SCORE - MAX_PLY) {
 							return beta;
 						}
@@ -329,7 +322,6 @@ namespace Search {
 				}
 			}
 			
-			// Store hash in repetition stack (already computed)
 			rep_stack[game_ply + ply] = key;
 			
 			Move moves[MAX_MOVES];
@@ -339,7 +331,6 @@ namespace Search {
 			i32 legal = 0, best = -INF;
 			Move best_move = NullMove;
 			
-			// Track quiet moves tried for history updates
 			Move quiets_tried[MAX_MOVES];
 			i32 quiets_count = 0;
 			
@@ -361,7 +352,6 @@ namespace Search {
 				const bool is_quiet = !is_capture(pos, moves[i]) && moves[i].promo == None;
 				const i32 new_depth = depth - 1;
 				
-				// A child is a PV node if we're at a PV node and it's the first move
 				const bool child_pv = pv_node && (move_index == 0);
 				
 				i32 score;
@@ -374,7 +364,6 @@ namespace Search {
 					score = -negamax(next, info, searched_depth, ply + 1, -beta, -alpha, false, child_key);
 					
 					if (!stopped.load(std::memory_order_relaxed) && score > alpha && searched_depth < new_depth) {
-						// Reduced search failed high, so verify at full depth.
 						score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, child_pv, child_key);
 					}
 				}
@@ -396,13 +385,11 @@ namespace Search {
 				if (best > alpha) {
 					alpha = best;
 					if (alpha >= beta) {
-						// Beta cutoff - update history and killers for the move that caused it
 						if (is_quiet) {
 							const i32 bonus = history_bonus(depth);
 							history.update(pos.flipped, best_move.from, best_move.to, bonus);
 							killers.update(ply, best_move);
 							
-							// Penalize other quiets that were tried before the cutoff
 							for (i32 j = 0; j < quiets_count; ++j) {
 								history.update(pos.flipped, quiets_tried[j].from, quiets_tried[j].to, -bonus);
 							}
@@ -411,14 +398,12 @@ namespace Search {
 					}
 				}
 				
-				// Track quiet moves for later penalty if we get a cutoff
 				if (is_quiet && quiets_count < MAX_MOVES) {
 					quiets_tried[quiets_count++] = moves[i];
 				}
 			}
 			
 			if (legal == 0) {
-				// Checkmate or stalemate
 				return in_check_now ? -MATE_SCORE + ply : 0;
 			}
 			
@@ -441,7 +426,6 @@ namespace Search {
 		std::cout << "info depth " << depth
 		<< " score cp " << score;
 		
-		// Add bound type if applicable
 		if (is_lowerbound) {
 			std::cout << " lowerbound";
 		} else if (is_upperbound) {
@@ -460,7 +444,6 @@ namespace Search {
 		info.reset();
 		info.start_time = std::chrono::steady_clock::now();
 		
-		// Calculate hash once at root
 		const u64 root_hash = Zobrist::hash(pos);
 		rep_stack[game_ply] = root_hash;
 		
@@ -471,7 +454,6 @@ namespace Search {
 			info.pv[0] = best;
 			info.pv_length = best.is_none() ? 0 : 1;
 			
-			// Aspiration window search around the previous score.
 			i32 delta     = 25;
 			i32 alpha     = -INF;
 			i32 beta      = INF;
@@ -489,11 +471,10 @@ namespace Search {
 				if (stopped.load(std::memory_order_relaxed)) break;
 				
 				if ((score <= alpha || score >= beta) && info.elapsed_time() > 1000) {
-					// Report with bound information when window fails
 					if (score <= alpha) {
-						report_uci_info(info, pos, info.pv[0], alpha, depth, false, true); // upperbound
+						report_uci_info(info, pos, info.pv[0], alpha, depth, false, true);
 					} else {
-						report_uci_info(info, pos, info.pv[0], beta, depth, true, false);  // lowerbound
+						report_uci_info(info, pos, info.pv[0], beta, depth, true, false);
 					}
 				}
 				
@@ -504,7 +485,6 @@ namespace Search {
 				}
 				else if (score >= beta) {
 					beta      = std::min(beta + delta, INF);
-					//From Sirius
 					asp_depth = std::max(asp_depth - 1, depth - 5);
 				}
 				else {
