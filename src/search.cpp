@@ -334,6 +334,10 @@ namespace Search {
 			Move quiets_tried[MAX_MOVES];
 			i32 quiets_count = 0;
 			
+			// Late Move Pruning threshold: 7 + depth * depth
+			const i32 lmp_threshold = 7 + depth * depth;
+			const bool can_lmp = !pv_node && !in_check_now && depth <= 5;
+			
 			for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {
 				Position next = pos;
 				if (!next.make_move(moves[i])) continue;
@@ -350,6 +354,12 @@ namespace Search {
 				}
 				
 				const bool is_quiet = !is_capture(pos, moves[i]) && moves[i].promo == None;
+				
+				// Late Move Pruning: skip late quiet moves in non-PV nodes
+				if (can_lmp && is_quiet && move_index >= lmp_threshold) {
+					break;  // All remaining moves will be quiet and pruned
+				}
+				
 				const i32 new_depth = depth - 1;
 				
 				const bool child_pv = pv_node && (move_index == 0);
