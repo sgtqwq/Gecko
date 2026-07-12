@@ -17,6 +17,9 @@ namespace Search {
 	
 	i32 reduction[256][MAX_PLY + 1]{};
 	
+	constexpr i32 NO_EVAL = -1000000;
+	static i32 static_eval_stack[MAX_PLY + 4];
+	
 	static void init_lmr() {
 		for (i32 i = 1; i < 256; ++i) {
 			for (i32 d = 1; d <= MAX_PLY; ++d) {
@@ -279,6 +282,8 @@ namespace Search {
 				}
 			}
 			
+			static_eval_stack[ply] = in_check_now ? NO_EVAL : eval;
+			
 			// Razoring
 			if (!pv_node
 				&& !in_check_now
@@ -334,8 +339,10 @@ namespace Search {
 			Move quiets_tried[MAX_MOVES];
 			i32 quiets_count = 0;
 			
-			// Late Move Pruning threshold: 7 + depth * depth
-			const i32 lmp_threshold = 7 + depth * depth;
+			const bool improving = !in_check_now && ply >= 2 &&
+			(static_eval_stack[ply - 2] == NO_EVAL || eval > static_eval_stack[ply - 2]);
+			
+			const i32 lmp_threshold = (7 + depth * depth) / (2 - (improving ? 1 : 0));
 			const bool can_lmp = !pv_node && !in_check_now && depth <= 5;
 			
 			for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {
