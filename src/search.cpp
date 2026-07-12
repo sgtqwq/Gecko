@@ -91,6 +91,17 @@ namespace Search {
 				if (moves[i] == tt_move) {
 					scores[i] = 1000000;
 				}
+				else if (moves[i].promo != None) {
+					i32 promo_score = 200000;
+					if (moves[i].promo == Queen) {
+						promo_score += 100;
+					}
+					if (is_capture(pos, moves[i])) {
+						promo_score += mvv_lva_score(pos, moves[i]);
+					}
+					
+					scores[i] = promo_score;
+				}
 				else if (is_capture(pos, moves[i])) {
 					scores[i] = 100000 + mvv_lva_score(pos, moves[i]);
 				}
