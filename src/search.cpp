@@ -232,7 +232,7 @@ namespace Search {
 			info.seldepth = std::max(info.seldepth, ply);
 			
 			if (!root && is_repetition(key, ply)) return 0;
-			
+			rep_stack[game_ply + ply] = key;
 			const bool in_check_now = in_check(pos);
 			
 			if (in_check_now && depth < MAX_PLY - 1) {
@@ -322,7 +322,6 @@ namespace Search {
 				}
 			}
 			
-			rep_stack[game_ply + ply] = key;
 			
 			Move moves[MAX_MOVES];
 			const i32 count = generate_moves(pos, moves, false);
