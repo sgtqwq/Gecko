@@ -9,7 +9,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
-
+#include <algorithm>
 namespace UCI {
 	
 	Position pos;
@@ -80,18 +80,22 @@ namespace UCI {
 		}
 		
 		// Time management
-		if (movetime > 0) {
-			search_info.time_limit = movetime;
-			search_info.infinite = false;
-		} else if (wtime > 0 || btime > 0) {
-			i64 our_time = pos.flipped ? btime : wtime;
-			i64 our_inc = pos.flipped ? binc : winc;
-			
-			search_info.time_limit = our_time / 30 + our_inc / 2;
-			search_info.time_limit = std::max(search_info.time_limit, (i64)100);
-			search_info.time_limit = std::min(search_info.time_limit, our_time - 50);
-			search_info.infinite = false;
-		}
+	if (movetime > 0) {
+		search_info.soft_time_limit = movetime;
+		search_info.time_limit = movetime;
+		search_info.infinite = false;
+	} else if (wtime > 0 || btime > 0) {
+		i64 our_time = pos.flipped ? btime : wtime;
+		i64 our_inc = pos.flipped ? binc : winc;
+		
+		i64 soft = our_time / 20 + our_inc / 2;
+		i64 hard = our_time / 6 + (our_inc * 5) / 6;
+		
+		
+		search_info.soft_time_limit = soft;
+		search_info.time_limit = hard;
+		search_info.infinite = false;
+	}
 		
 		if (search_thread.joinable()) {
 			Search::stop();

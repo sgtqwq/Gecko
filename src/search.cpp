@@ -514,7 +514,7 @@ namespace Search {
 				report_uci_info(info, pos, best, best_score, depth);
 			}
 			
-			if (!info.infinite && info.elapsed_time() >= info.time_limit) break;
+			if (!info.infinite && info.elapsed_time() >= info.soft_time_limit) break;
 		}
 		
 		return best;
