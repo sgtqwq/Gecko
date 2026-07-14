@@ -227,8 +227,9 @@ namespace Search {
 	}
 	
 	static i32 negamax(Position& pos, SearchInfo& info, i32 depth, i32 ply,
-		i32 alpha, i32 beta, bool pv_node, u64 key) {
+		i32 alpha, i32 beta, bool pv_node, u64 key, Move excluded_move = NullMove) {
 			const bool root = (ply == 0);
+			const bool excluded = !excluded_move.is_none();
 			info.seldepth = std::max(info.seldepth, ply);
 			
 			if (!root && is_repetition(key, ply)) return 0;
@@ -250,7 +251,7 @@ namespace Search {
 				tt_move = tt_entry->best_move();
 				if (tt_entry->has_score()) {
 					tt_score = score_from_tt(tt_entry->score, ply);
-					if (!root && tt_entry->depth >= depth) {
+					if (!root && !excluded && tt_entry->depth >= depth) {
 						if (tt_entry->flag == TT_EXACT) return tt_score;
 						if (tt_entry->flag == TT_ALPHA && tt_score <= alpha) return tt_score;
 						if (tt_entry->flag == TT_BETA  && tt_score >= beta)  return tt_score;
@@ -258,7 +259,7 @@ namespace Search {
 				}
 			}
 			
-			if (depth >= 3 && tt_move == NullMove) {
+			if (depth >= 3 && tt_move == NullMove && !excluded) {
 				depth--;
 			}
 			
@@ -280,7 +281,7 @@ namespace Search {
 			}
 			
 			// Razoring
-			if (!pv_node
+			if (!excluded && !pv_node
 				&& !in_check_now
 				&& depth <= 7
 				&& eval + 320 * depth < alpha) {
@@ -291,7 +292,7 @@ namespace Search {
 			}
 			
 			// Reverse Futility Pruning
-			if (!pv_node && !in_check_now && depth <= 8) {
+			if (!excluded && !pv_node && !in_check_now && depth <= 8) {
 				const i32 rfp_margin = 88 * depth;
 				if (eval - rfp_margin >= beta) {
 					return (eval + beta) / 2;
@@ -299,7 +300,7 @@ namespace Search {
 			}
 			
 			// Null Move Pruning
-			if (!pv_node && !in_check_now && depth >= 3 && has_non_pawn_material(pos)) {
+			if (!excluded && !pv_node && !in_check_now && depth >= 3 && has_non_pawn_material(pos)) {
 				if (eval >= beta + 25) {
 					const i32 R = 4 + depth / 3;
 					
@@ -338,6 +339,8 @@ namespace Search {
 			const bool can_lmp = !pv_node && !in_check_now && depth <= 5;
 			
 			for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {
+				if (moves[i] == excluded_move) continue;
+				
 				Position next = pos;
 				if (!next.make_move(moves[i])) continue;
 				
@@ -359,7 +362,33 @@ namespace Search {
 					break;  // All remaining moves will be quiet and pruned
 				}
 				
-				const i32 new_depth = depth - 1;
+				// Singular Extensions (base version: extend only, no double
+				// extension, no multi-cut).
+				i32 extension = 0;
+				
+				if (!root && !excluded
+					&& moves[i] == tt_move
+					&& depth >= 6
+					&& tt_entry
+					&& tt_entry->has_score()
+					&& tt_entry->depth >= depth - 3
+					&& tt_entry->flag != TT_ALPHA
+					&& std::abs(tt_score) < MATE_SCORE - MAX_PLY) {
+					
+					const i32 s_beta  = tt_score - 2 * depth;
+					const i32 s_depth = (depth - 1) / 2;
+					
+					const i32 s_score = negamax(pos, info, s_depth, ply,
+						s_beta - 1, s_beta, false, key, moves[i]);
+					
+					if (stopped.load(std::memory_order_relaxed)) return 0;
+					
+					if (s_score < s_beta) {
+						extension = 1;
+					}
+				}
+				
+				const i32 new_depth = depth - 1 + extension;
 				
 				const bool child_pv = pv_node && (move_index == 0);
 				
@@ -414,10 +443,11 @@ namespace Search {
 			}
 			
 			if (legal == 0) {
+				if (excluded) return alpha;
 				return in_check_now ? -MATE_SCORE + ply : 0;
 			}
 			
-			if (!stopped.load(std::memory_order_relaxed)) {
+			if (!stopped.load(std::memory_order_relaxed) && !excluded) {
 				u8 flag = TT_EXACT;
 				if (best <= alpha_orig) flag = TT_ALPHA;
 				else if (best >= beta) flag = TT_BETA;
