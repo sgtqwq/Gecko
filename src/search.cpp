@@ -354,31 +354,53 @@ namespace Search {
 				
 				const bool is_quiet = !is_capture(pos, moves[i]) && moves[i].promo == None;
 				
-				// Late Move Pruning: skip late quiet moves in non-PV nodes
+				// Late Move Pruning
 				if (can_lmp && is_quiet && move_index >= lmp_threshold) {
-					break;  // All remaining moves will be quiet and pruned
+					break;
 				}
 				
 				const i32 new_depth = depth - 1;
+				i32 score = 0;
 				
-				const bool child_pv = pv_node && (move_index == 0);
-				
-				i32 score;
+				// ---- Principal Variation Search (PVS) ----
+				// For a PV node's first move, search with the full window.
+				// For every other move (including all moves in non-PV nodes,
+				// which are already zero-window), search with a zero window first.
+				// If a zero-window search unexpectedly beats alpha inside a PV
+				// node, we must re-search with the full window to get an exact
+				// score.
 				
 				if (depth >= 2 && move_index >= 1 + 2 * root) {
+					// Late Move Reductions: reduced depth + zero window
 					const i32 r_idx = std::min(move_index, 255);
 					i32 r = reduction[r_idx][std::min(depth, MAX_PLY)];
-					if(!is_quiet) r *= 0.6;
+					if (!is_quiet) r = static_cast<i32>(r * 0.6);
 					const i32 searched_depth = std::clamp(new_depth - r, 1, new_depth);
 					
-					score = -negamax(next, info, searched_depth, ply + 1, -beta, -alpha, false, child_key);
+					score = -negamax(next, info, searched_depth, ply + 1,
+						-alpha - 1, -alpha, false, child_key);
 					
-					if (!stopped.load(std::memory_order_relaxed) && score > alpha && searched_depth < new_depth) {
-						score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, child_pv, child_key);
+					// If the reduced search beats alpha, re-search at full depth
+					// with a zero window.
+					if (!stopped.load(std::memory_order_relaxed) &&
+						score > alpha && searched_depth < new_depth) {
+						score = -negamax(next, info, new_depth, ply + 1,
+							-alpha - 1, -alpha, false, child_key);
 					}
 				}
-				else {
-					score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, child_pv, child_key);
+				else if (!pv_node || move_index >= 1) {
+					// Zero-window search for every non-first move (and for all
+					// moves in non-PV nodes).
+					score = -negamax(next, info, new_depth, ply + 1,
+						-alpha - 1, -alpha, false, child_key);
+				}
+				
+				// Full-window search for the PV node's first move, or when a
+				// zero-window search unexpectedly raised alpha.
+				if (pv_node && (move_index == 0 ||
+					(score > alpha && !stopped.load(std::memory_order_relaxed)))) {
+					score = -negamax(next, info, new_depth, ply + 1,
+						-beta, -alpha, true, child_key);
 				}
 				
 				if (stopped.load(std::memory_order_relaxed)) break;
