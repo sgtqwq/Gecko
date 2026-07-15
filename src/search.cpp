@@ -6,6 +6,7 @@
 #include <iostream>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace Search {
 	
@@ -15,6 +16,11 @@ namespace Search {
 	HistoryTable history;
 	KillerTable killers;
 	CaptureHistoryTable capture_history;
+	i32 eval_stack[MAX_PLY]{};
+	
+	namespace {
+		constexpr i32 NO_EVAL = std::numeric_limits<i32>::min();
+	}
 	
 	i32 reduction[256][MAX_PLY + 1]{};
 	
@@ -288,6 +294,13 @@ namespace Search {
 				}
 			}
 			
+			eval_stack[ply] = in_check_now ? NO_EVAL : eval;
+			
+			const bool improving = !in_check_now
+			&& ply >= 2
+			&& eval_stack[ply - 2] != NO_EVAL
+			&& eval > eval_stack[ply - 2];
+			
 			if (!pv_node
 				&& !in_check_now
 				&& depth <= 7
@@ -342,8 +355,8 @@ namespace Search {
 			Move captures_tried[MAX_MOVES];
 			i32 captures_count = 0;
 			
-			const i32 lmp_threshold = 7 + depth * depth;
-			const bool can_lmp = !pv_node && !in_check_now && depth <= 5;
+			const i32 lmp_threshold = (8 + depth * depth) / (2 - improving);
+			const bool can_lmp = !pv_node && !in_check_now && depth <= 6;
 			
 			for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {
 				Position next = pos;
