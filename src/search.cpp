@@ -14,6 +14,7 @@ namespace Search {
 	i32 game_ply = 0;
 	HistoryTable history;
 	KillerTable killers;
+	CaptureHistoryTable capture_history;
 	
 	i32 reduction[256][MAX_PLY + 1]{};
 	
@@ -25,7 +26,6 @@ namespace Search {
 		}
 	}
 	
-	// PNBRQKX (X = no piece)
 	constexpr i32 MVV_LVA[7][7] = {
 		{15, 14, 13, 12, 11, 10, 0},
 		{25, 24, 23, 22, 21, 20, 0},
@@ -36,14 +36,18 @@ namespace Search {
 		{0, 0, 0, 0, 0, 0, 0}
 	};
 	
-	static inline i32 mvv_lva_score(const Position& pos, const Move& move) {
-		PieceType attacker = pos.piece_on(move.from);
-		PieceType victim   = pos.piece_on(move.to);
-		
-		if (victim == None && attacker == Pawn && pos.ep && BB::square_bb(move.to) == pos.ep) {
+	static inline PieceType captured_piece_type(const Position& pos, const Move& move) {
+		PieceType victim = pos.piece_on(move.to);
+		if (victim == None && pos.piece_on(move.from) == Pawn &&
+			pos.ep && BB::square_bb(move.to) == pos.ep) {
 			victim = Pawn;
 		}
-		
+		return victim;
+	}
+	
+	static inline i32 mvv_lva_score(const Position& pos, const Move& move) {
+		PieceType attacker = pos.piece_on(move.from);
+		PieceType victim   = captured_piece_type(pos, move);
 		return MVV_LVA[victim][attacker];
 	}
 	
@@ -92,7 +96,10 @@ namespace Search {
 					scores[i] = 1000000;
 				}
 				else if (is_capture(pos, moves[i])) {
-					scores[i] = 100000 + mvv_lva_score(pos, moves[i]);
+					const PieceType attacker = pos.piece_on(moves[i].from);
+					const PieceType victim   = captured_piece_type(pos, moves[i]);
+					scores[i] = 100000 + mvv_lva_score(pos, moves[i]) * 100
+					+ capture_history.get_score(stm_flipped, attacker, moves[i].to, victim) / 32;
 				}
 				else if (moves[i] == killer1) {
 					scores[i] = 90000;
@@ -123,12 +130,14 @@ namespace Search {
 		stopped.store(false, std::memory_order_relaxed);
 		history.clear();
 		killers.clear();
+		capture_history.clear();
 		init_lmr();
 	}
 	
 	void clear_tables() {
 		history.clear();
 		killers.clear();
+		capture_history.clear();
 	}
 	
 	bool is_repetition(u64 hash, i32 ply) {
@@ -279,7 +288,6 @@ namespace Search {
 				}
 			}
 			
-			// Razoring
 			if (!pv_node
 				&& !in_check_now
 				&& depth <= 7
@@ -290,7 +298,6 @@ namespace Search {
 				}
 			}
 			
-			// Reverse Futility Pruning
 			if (!pv_node && !in_check_now && depth <= 8) {
 				const i32 rfp_margin = 88 * depth;
 				if (eval - rfp_margin >= beta) {
@@ -298,7 +305,6 @@ namespace Search {
 				}
 			}
 			
-			// Null Move Pruning
 			if (!pv_node && !in_check_now && depth >= 3 && has_non_pawn_material(pos)) {
 				if (eval >= beta + 25) {
 					const i32 R = 4 + depth / 3;
@@ -333,7 +339,9 @@ namespace Search {
 			Move quiets_tried[MAX_MOVES];
 			i32 quiets_count = 0;
 			
-			// Late Move Pruning threshold: 7 + depth * depth
+			Move captures_tried[MAX_MOVES];
+			i32 captures_count = 0;
+			
 			const i32 lmp_threshold = 7 + depth * depth;
 			const bool can_lmp = !pv_node && !in_check_now && depth <= 5;
 			
@@ -352,11 +360,11 @@ namespace Search {
 					stopped.store(true, std::memory_order_relaxed);
 				}
 				
-				const bool is_quiet = !is_capture(pos, moves[i]) && moves[i].promo == None;
+				const bool is_cap   = is_capture(pos, moves[i]);
+				const bool is_quiet = !is_cap && moves[i].promo == None;
 				
-				// Late Move Pruning: skip late quiet moves in non-PV nodes
 				if (can_lmp && is_quiet && move_index >= lmp_threshold) {
-					break;  // All remaining moves will be quiet and pruned
+					break;
 				}
 				
 				const i32 new_depth = depth - 1;
@@ -395,8 +403,9 @@ namespace Search {
 				if (best > alpha) {
 					alpha = best;
 					if (alpha >= beta) {
+						const i32 bonus = history_bonus(depth);
+						
 						if (is_quiet) {
-							const i32 bonus = history_bonus(depth);
 							history.update(pos.flipped, best_move.from, best_move.to, bonus);
 							killers.update(ply, best_move);
 							
@@ -404,12 +413,27 @@ namespace Search {
 								history.update(pos.flipped, quiets_tried[j].from, quiets_tried[j].to, -bonus);
 							}
 						}
+						else if (is_cap) {
+							const PieceType attacker = pos.piece_on(best_move.from);
+							const PieceType victim   = captured_piece_type(pos, best_move);
+							capture_history.update(pos.flipped, attacker, best_move.to, victim, bonus);
+						}
+						
+						for (i32 j = 0; j < captures_count; ++j) {
+							const PieceType attacker_j = pos.piece_on(captures_tried[j].from);
+							const PieceType victim_j   = captured_piece_type(pos, captures_tried[j]);
+							capture_history.update(pos.flipped, attacker_j, captures_tried[j].to, victim_j, -bonus);
+						}
+						
 						break;
 					}
 				}
 				
 				if (is_quiet && quiets_count < MAX_MOVES) {
 					quiets_tried[quiets_count++] = moves[i];
+				}
+				else if (is_cap && captures_count < MAX_MOVES) {
+					captures_tried[captures_count++] = moves[i];
 				}
 			}
 			
