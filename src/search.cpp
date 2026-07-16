@@ -355,8 +355,8 @@ namespace Search {
 			Move captures_tried[MAX_MOVES];
 			i32 captures_count = 0;
 			
-			const i32 lmp_threshold = (8 + depth * depth) / (2 - improving);
-			const bool can_lmp = !pv_node && !in_check_now && depth <= 6;
+			const i32 lmp_threshold = (10 + depth * depth) / (2 - improving);
+			const bool can_lmp = !pv_node && !in_check_now;
 			
 			for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {
 				Position next = pos;
