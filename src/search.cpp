@@ -292,6 +292,7 @@ namespace Search {
 			
 			if (!pv_node
 				&& !in_check_now
+				&& !excluded
 				&& depth <= 7
 				&& eval + 320 * depth < alpha) {
 				const i32 razor_score = quiescence(pos, info, ply, alpha, beta, key);
@@ -300,14 +301,14 @@ namespace Search {
 				}
 			}
 			
-			if (!pv_node && !in_check_now && depth <= 8) {
+			if (!pv_node && !in_check_now && !excluded && depth <= 8) {
 				const i32 rfp_margin = 88 * depth;
 				if (eval - rfp_margin >= beta) {
 					return (eval + beta) / 2;
 				}
 			}
 			
-			if (!pv_node && !in_check_now && depth >= 3 && has_non_pawn_material(pos)) {
+			if (!pv_node && !in_check_now && !excluded && depth >= 3 && has_non_pawn_material(pos)) {
 				if (eval >= beta + 25) {
 					const i32 R = 4 + depth / 3;
 					
