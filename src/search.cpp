@@ -6,6 +6,7 @@
 #include <iostream>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 namespace Search {
 	
@@ -236,8 +237,9 @@ namespace Search {
 	}
 	
 	static i32 negamax(Position& pos, SearchInfo& info, i32 depth, i32 ply,
-		i32 alpha, i32 beta, bool pv_node, u64 key) {
+		i32 alpha, i32 beta, bool pv_node, u64 key, Move excluded_move = NullMove) {
 			const bool root = (ply == 0);
+			const bool excluded = !excluded_move.is_none();
 			info.seldepth = std::max(info.seldepth, ply);
 			
 			if (!root && is_repetition(key, ply)) return 0;
@@ -259,7 +261,7 @@ namespace Search {
 				tt_move = tt_entry->best_move();
 				if (tt_entry->has_score()) {
 					tt_score = score_from_tt(tt_entry->score, ply);
-					if (!root && tt_entry->depth >= depth) {
+					if (!root && !excluded && tt_entry->depth >= depth) {
 						if (tt_entry->flag == TT_EXACT) return tt_score;
 						if (tt_entry->flag == TT_ALPHA && tt_score <= alpha) return tt_score;
 						if (tt_entry->flag == TT_BETA  && tt_score >= beta)  return tt_score;
@@ -346,6 +348,8 @@ namespace Search {
 			const bool can_lmp = !pv_node && !in_check_now && depth <= 5;
 			
 			for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {
+				if (moves[i] == excluded_move) continue;
+				
 				Position next = pos;
 				if (!next.make_move(moves[i])) continue;
 				
@@ -367,7 +371,28 @@ namespace Search {
 					break;
 				}
 				
-				const i32 new_depth = depth - 1;
+				// ---- Singular Extension (base) ----
+				i32 extension = 0;
+				if (!root && !excluded
+					&& depth >= 8
+					&& moves[i] == tt_move
+					&& tt_entry && tt_entry->has_score()
+					&& tt_entry->depth >= depth - 3
+					&& tt_entry->flag != TT_ALPHA
+					&& std::abs(tt_score) < MATE_SCORE - MAX_PLY) {
+					
+					const i32 singular_beta  = tt_score - depth * 2;
+					const i32 singular_depth = (depth - 1) / 2;
+					
+					const i32 singular_score = negamax(pos, info, singular_depth, ply,
+						singular_beta - 1, singular_beta, false, key, moves[i]);
+					
+					if (singular_score < singular_beta) {
+						extension = 1;
+					}
+				}
+				
+				const i32 new_depth = depth - 1 + extension;
 				
 				const bool child_pv = pv_node && (move_index == 0);
 				
@@ -438,10 +463,11 @@ namespace Search {
 			}
 			
 			if (legal == 0) {
+				if (excluded) return alpha;
 				return in_check_now ? -MATE_SCORE + ply : 0;
 			}
 			
-			if (!stopped.load(std::memory_order_relaxed)) {
+			if (!excluded && !stopped.load(std::memory_order_relaxed)) {
 				u8 flag = TT_EXACT;
 				if (best <= alpha_orig) flag = TT_ALPHA;
 				else if (best >= beta) flag = TT_BETA;
