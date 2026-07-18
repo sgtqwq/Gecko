@@ -376,9 +376,7 @@ namespace Search {
 				if (depth >= 2 && move_index >= 1 + 2 * root) {
 					const i32 r_idx = std::min(move_index, 255);
 					i32 r = reduction[r_idx][std::min(depth, MAX_PLY)];
-					if(!is_quiet){
-						r=0;
-					}
+					if(!is_quiet) r *= 0.6;
 					const i32 searched_depth = std::clamp(new_depth - r, 1, new_depth);
 					
 					score = -negamax(next, info, searched_depth, ply + 1, -beta, -alpha, false, child_key);
