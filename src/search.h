@@ -100,10 +100,12 @@ struct KillerTable {
 
 struct SearchInfo {
 	u64 nodes;
+	u64 nodes_table[4096];  // Track nodes per root move
 	i32 depth;
 	i32 seldepth;
 	Move pv[MAX_PLY];
 	i32 pv_length;
+	Move best_move;
 	
 	std::chrono::steady_clock::time_point start_time;
 	i64 soft_time_limit;
@@ -111,14 +113,18 @@ struct SearchInfo {
 	bool infinite;
 	
 	SearchInfo()
-	: nodes(0), depth(0), seldepth(0), pv_length(0),
-	soft_time_limit(0), time_limit(0), infinite(true) {}
+	: nodes(0), depth(0), seldepth(0), pv_length(0), best_move(NullMove),
+	soft_time_limit(0), time_limit(0), infinite(true) {
+		for (int i = 0; i < 4096; ++i) nodes_table[i] = 0;
+	}
 	
 	void reset() {
 		nodes = 0;
 		depth = 0;
 		seldepth = 0;
 		pv_length = 0;
+		best_move = NullMove;
+		for (int i = 0; i < 4096; ++i) nodes_table[i] = 0;
 	}
 	
 	i64 elapsed_time() const {

@@ -57,7 +57,7 @@ namespace UCI {
 		search_info.infinite = true;
 		i32 max_depth = MAX_PLY;
 		
-		i64 wtime = 0, btime = 0, winc = 0, binc = 0, movetime = 0;
+		i64 wtime = 0, btime = 0, winc = 0, binc = 0, movetime = 0, movestogo = 0;
 		
 		std::string token;
 		while (iss >> token) {
@@ -76,20 +76,43 @@ namespace UCI {
 				iss >> winc;
 			} else if (token == "binc") {
 				iss >> binc;
+			} else if (token == "movestogo") {
+				iss >> movestogo;
 			}
 		}
 		
 		// Time management
 		if (movetime > 0) {
 			search_info.time_limit = movetime;
+			search_info.soft_time_limit = movetime;
 			search_info.infinite = false;
 		} else if (wtime > 0 || btime > 0) {
 			i64 our_time = pos.flipped ? btime : wtime;
 			i64 our_inc = pos.flipped ? binc : winc;
 			
-			search_info.time_limit = our_time / 30 + our_inc / 2;
-			search_info.time_limit = std::max(search_info.time_limit, (i64)100);
+			// Account for move overhead (50ms assumed)
+			our_time = std::max(our_time - 50, (i64)0);
+			
+			// Calculate time allocation
+			if (movestogo > 0) {
+				// Classical time control
+				search_info.time_limit = our_time / movestogo + our_inc * 3 / 4;
+			} else {
+				// Increment or sudden death
+				search_info.time_limit = our_time / 20 + our_inc / 2;
+			}
+			
+			// Soft limit is half of hard limit
+			search_info.soft_time_limit = search_info.time_limit / 2;
+			
+			// Ensure minimum time
+			search_info.time_limit = std::max(search_info.time_limit, (i64)10);
+			search_info.soft_time_limit = std::max(search_info.soft_time_limit, (i64)10);
+			
+			// Don't exceed available time
 			search_info.time_limit = std::min(search_info.time_limit, our_time - 50);
+			search_info.soft_time_limit = std::min(search_info.soft_time_limit, our_time / 2);
+			
 			search_info.infinite = false;
 		}
 		

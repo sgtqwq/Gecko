@@ -353,6 +353,10 @@ namespace Search {
 				tt.prefetch(child_key);
 				const i32 move_index = legal;
 				legal++;
+				
+				// Track node count at root level
+				const u64 nodes_before = info.nodes;
+				
 				info.nodes++;
 				
 				if ((info.nodes & 2047) == 0 && !info.infinite &&
@@ -391,12 +395,19 @@ namespace Search {
 				
 				if (stopped.load(std::memory_order_relaxed)) break;
 				
+				// Track nodes spent on this root move
+				if (root) {
+					const u32 move_key = (moves[i].from | (moves[i].to << 6)) & 4095;
+					info.nodes_table[move_key] += info.nodes - nodes_before;
+				}
+				
 				if (score > best) {
 					best = score;
 					best_move = moves[i];
 					if (root) {
 						info.pv[0] = best_move;
 						info.pv_length = 1;
+						info.best_move = best_move;
 					}
 				}
 				
@@ -536,6 +547,22 @@ namespace Search {
 				best       = info.pv[0];
 				info.depth = depth;
 				report_uci_info(info, pos, best, best_score, depth);
+			}
+			
+			// Improved time management with node-based stability check
+			if (!info.infinite && depth > 1) {
+				const i64 elapsed = info.elapsed_time();
+				const u32 best_move_key = (best.from | (best.to << 6)) & 4095;
+				const double best_move_fraction = info.nodes > 0 
+				? static_cast<double>(info.nodes_table[best_move_key]) / info.nodes 
+				: 0.5;
+				
+				// Use more time if best move is unstable (getting less nodes than average)
+				const double time_factor = 1.8 - best_move_fraction;
+				
+				if (elapsed >= info.soft_time_limit * time_factor) {
+					break;
+				}
 			}
 			
 			if (!info.infinite && info.elapsed_time() >= info.time_limit) break;
