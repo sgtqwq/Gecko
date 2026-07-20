@@ -49,7 +49,7 @@ public:
 	TT();
 	~TT();
 	
-	void resize(size_t mb);
+	void resize(size_t mb, bool report = true);
 	void clear();
 	void store(u64 key, i32 depth, i32 score, i32 static_eval, u8 flag, Move move);
 	void store_eval(u64 key, i32 static_eval);

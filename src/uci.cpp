@@ -5,6 +5,7 @@
 #include "eval.h"
 #include "tt.h"
 #include "bitboard.h"
+#include "search_params.h"
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -144,6 +145,18 @@ namespace UCI {
 			tt.clear();
 			std::cout << "info string Hash cleared" << std::endl;
 		}
+		else {
+			std::string error;
+			if (SearchParams::set_parameter(option_name, option_value, error)) {
+				if (error.empty()) {
+					std::cout << "info string " << option_name << " set to "
+						<< option_value << std::endl;
+				} else {
+					std::cout << "info string failed to set " << option_name
+						<< ": " << error << std::endl;
+				}
+			}
+		}
 	}
 	
 	void loop() {
@@ -161,7 +174,11 @@ namespace UCI {
 				std::cout << "option name Hash type spin default 16 min 1 max 4096\n";
 				std::cout << "option name Threads type spin default 1 min 1 max 1\n";
 				std::cout << "option name Clear Hash type button\n";
+				SearchParams::print_uci_options(std::cout);
 				std::cout << "uciok\n";
+			}
+			else if (cmd == "obconfig") {
+				SearchParams::print_openbench_config(std::cout);
 			}
 			else if (cmd == "isready") {
 				std::cout << "readyok\n";

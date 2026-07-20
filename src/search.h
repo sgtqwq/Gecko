@@ -140,6 +140,7 @@ namespace Search {
 	extern CaptureHistoryTable capture_history;
 	
 	void init();
+	void update_lmr_table();
 	void clear_tables();
 	
 	bool is_repetition(u64 hash, i32 ply);
