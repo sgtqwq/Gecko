@@ -104,6 +104,7 @@ struct SearchInfo {
 	i32 seldepth;
 	Move pv[MAX_PLY];
 	i32 pv_length;
+	i32 eval_stack[MAX_PLY + 2];
 	
 	std::chrono::steady_clock::time_point start_time;
 	i64 soft_time_limit;
@@ -112,13 +113,16 @@ struct SearchInfo {
 	
 	SearchInfo()
 	: nodes(0), depth(0), seldepth(0), pv_length(0),
-	soft_time_limit(0), time_limit(0), infinite(true) {}
+	soft_time_limit(0), time_limit(0), infinite(true) {
+		for (int i = 0; i < MAX_PLY + 2; ++i) eval_stack[i] = TT_NO_SCORE;
+	}
 	
 	void reset() {
 		nodes = 0;
 		depth = 0;
 		seldepth = 0;
 		pv_length = 0;
+		for (int i = 0; i < MAX_PLY + 2; ++i) eval_stack[i] = TT_NO_SCORE;
 	}
 	
 	i64 elapsed_time() const {

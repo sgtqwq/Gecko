@@ -21,7 +21,7 @@ namespace Search {
 	static void init_lmr() {
 		for (i32 i = 1; i < 256; ++i) {
 			for (i32 d = 1; d <= MAX_PLY; ++d) {
-				reduction[i][d] = static_cast<i32>(1.148 + std::log(i) * std::log(d) / 2.43);
+				reduction[i][d] = static_cast<i32>((1.148 + std::log(i) * std::log(d) / 2.43) * 1024);
 			}
 		}
 	}
@@ -288,6 +288,18 @@ namespace Search {
 				}
 			}
 			
+			if (!in_check_now)
+				info.eval_stack[ply] = eval;
+			else if (ply >= 2)
+				info.eval_stack[ply] = info.eval_stack[ply - 2];
+			else
+				info.eval_stack[ply] = TT_NO_SCORE;
+			
+			const bool improving = !in_check_now
+			&& ply >= 2
+			&& info.eval_stack[ply - 2] != static_cast<i32>(TT_NO_SCORE)
+			&& eval > info.eval_stack[ply - 2];
+			
 			if (!pv_node
 				&& !in_check_now
 				&& depth <= 7
@@ -299,7 +311,7 @@ namespace Search {
 			}
 			
 			if (!pv_node && !in_check_now && depth <= 8) {
-				const i32 rfp_margin = 88 * depth;
+				const i32 rfp_margin = 88 * depth - 0 * improving;
 				if (eval - rfp_margin >= beta) {
 					return (eval + beta) / 2;
 				}
@@ -328,7 +340,6 @@ namespace Search {
 				}
 			}
 			
-			
 			Move moves[MAX_MOVES];
 			const i32 count = generate_moves(pos, moves, false);
 			order_moves(pos, moves, count, ply, tt_move, pos.flipped);
@@ -342,8 +353,11 @@ namespace Search {
 			Move captures_tried[MAX_MOVES];
 			i32 captures_count = 0;
 			
-			const i32 lmp_threshold = 7 + depth * depth;
+			const i32 lmp_threshold = improving ? 7 + depth * depth : 7 + depth * depth;
 			const bool can_lmp = !pv_node && !in_check_now && depth <= 5;
+			
+			const Move killer1 = (ply >= 0 && ply < MAX_PLY) ? killers.killers[ply][0] : NullMove;
+			const Move killer2 = (ply >= 0 && ply < MAX_PLY) ? killers.killers[ply][1] : NullMove;
 			
 			for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {
 				Position next = pos;
@@ -368,23 +382,38 @@ namespace Search {
 				}
 				
 				const i32 new_depth = depth - 1;
-				
 				const bool child_pv = pv_node && (move_index == 0);
+				const bool child_in_check = in_check(next);
 				
 				i32 score;
 				
-				if (depth >= 2 && move_index >= 1 + 2 * root) {
-					const i32 r_idx = std::min(move_index, 255);
-					i32 r = reduction[r_idx][std::min(depth, MAX_PLY)];
-					if(!is_quiet) r *= 0.6;
-					const i32 searched_depth = std::clamp(new_depth - r, 1, new_depth);
+			if (depth >= 2 && move_index >= 1 + 2 * root) {
+				const i32 r_idx = std::min(move_index, 255);
+				i32 r_q = reduction[r_idx][std::min(depth, MAX_PLY)];
+				
+				if (is_quiet) {
+					const i32 hist_score = history.get_score(pos.flipped, moves[i].from, moves[i].to);
+					r_q += hist_score * 1024 / 8192;
 					
-					score = -negamax(next, info, searched_depth, ply + 1, -beta, -alpha, false, child_key);
-					
-					if (!stopped.load(std::memory_order_relaxed) && score > alpha && searched_depth < new_depth) {
-						score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, child_pv, child_key);
-					}
+					if (pv_node)        r_q -= 1024;
+					if (improving)      r_q -= 512;
+					if (in_check_now)   r_q -= 512;
+					if (child_in_check) r_q -= 512;
+					if (moves[i] == killer1 || moves[i] == killer2) r_q -= 512;
+				} else {
+					r_q = static_cast<i32>(r_q * 0.6);
 				}
+				
+				r_q = std::max(r_q, 0);
+				const i32 r = r_q / 1024;
+				const i32 searched_depth = std::clamp(new_depth - r, 1, new_depth);
+				
+				score = -negamax(next, info, searched_depth, ply + 1, -beta, -alpha, false, child_key);
+				
+				if (!stopped.load(std::memory_order_relaxed) && score > alpha && searched_depth < new_depth) {
+					score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, child_pv, child_key);
+				}
+			}
 				else {
 					score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, child_pv, child_key);
 				}
