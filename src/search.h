@@ -134,6 +134,7 @@ namespace Search {
 	extern HistoryTable history;
 	extern KillerTable killers;
 	extern CaptureHistoryTable capture_history;
+	extern i32 static_eval_stack[MAX_PLY];
 	
 	void init();
 	void clear_tables();

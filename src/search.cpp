@@ -15,6 +15,7 @@ namespace Search {
 	HistoryTable history;
 	KillerTable killers;
 	CaptureHistoryTable capture_history;
+	i32 static_eval_stack[MAX_PLY]{};
 	
 	i32 reduction[256][MAX_PLY + 1]{};
 	
@@ -288,6 +289,13 @@ namespace Search {
 				}
 			}
 			
+			if (ply < MAX_PLY)
+				static_eval_stack[ply] = in_check_now ? INF : eval;
+			
+			bool improving = false;
+			if (!in_check_now && ply >= 2 && static_eval_stack[ply - 2] != INF)
+				improving = eval > static_eval_stack[ply - 2];
+			
 			if (!pv_node
 				&& !in_check_now
 				&& depth <= 7
@@ -342,7 +350,7 @@ namespace Search {
 			Move captures_tried[MAX_MOVES];
 			i32 captures_count = 0;
 			
-			const i32 lmp_threshold = 7 + depth * depth;
+			const i32 lmp_threshold = (7 + depth * depth) * 2 / (3 - (improving ? 1 : 0));
 			const bool can_lmp = !pv_node && !in_check_now && depth <= 5;
 			
 			for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {
