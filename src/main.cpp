@@ -6,7 +6,6 @@
 #include "search.h"
 #include "tt.h"
 #include "uci.h"
-#include "search_params.h"
 
 #include <chrono>
 #include <iostream>
@@ -38,13 +37,6 @@ static int run_bench() {
 }
 
 int main(int argc, char* argv[]) {
-	// This mode does not need board, NNUE, TT, or search initialization and
-	// intentionally prints only paste-ready OpenBench SPSA input.
-	if (argc >= 2 && std::string(argv[1]) == "obconfig") {
-		SearchParams::print_openbench_config(std::cout);
-		return 0;
-	}
-
 	BB::init();
 	Zobrist::init();
 	Eval::init();

@@ -60,7 +60,7 @@ namespace Zobrist {
 }
 
 TT::TT() : table(nullptr), num_buckets(0), used(0) {
-	resize(16, false);
+	resize(16);
 }
 
 TT::~TT() {
@@ -81,7 +81,7 @@ Move TTEntry::best_move() const {
 	);
 }
 
-void TT::resize(size_t mb, bool report) {
+void TT::resize(size_t mb) {
 	delete[] table;
 	table = nullptr;
 	
@@ -93,12 +93,10 @@ void TT::resize(size_t mb, bool report) {
 	table = new TTBucket[num_buckets];
 	clear();
 	
-	if (report) {
-		const size_t actual_mb = num_buckets * sizeof(TTBucket) / (1024 * 1024);
-		std::cout << "info string Hash table: " << num_buckets * 3 << " entries ("
-			<< actual_mb << " MB, entry size " << sizeof(TTEntry)
-			<< " bytes)" << std::endl;
-	}
+	const size_t actual_mb = num_buckets * sizeof(TTBucket) / (1024 * 1024);
+	std::cout << "info string Hash table: " << num_buckets * 3 << " entries ("
+	<< actual_mb << " MB, entry size " << sizeof(TTEntry)
+	<< " bytes)" << std::endl;
 }
 
 void TT::clear() {
