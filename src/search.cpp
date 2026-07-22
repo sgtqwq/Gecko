@@ -21,7 +21,7 @@ namespace Search {
 	static void init_lmr() {
 		for (i32 i = 1; i < 256; ++i) {
 			for (i32 d = 1; d <= MAX_PLY; ++d) {
-				reduction[i][d] = static_cast<i32>((1.148 + std::log(i) * std::log(d) / 2.43) * 1024);
+				reduction[i][d] = static_cast<i32>((1.1375 + std::log(i) * std::log(d) / 2.349) * 1024);
 			}
 		}
 	}
@@ -303,7 +303,7 @@ namespace Search {
 			if (!pv_node
 				&& !in_check_now
 				&& depth <= 7
-				&& eval + 320 * depth < alpha) {
+				&& eval + 319 * depth < alpha) {
 				const i32 razor_score = quiescence(pos, info, ply, alpha, beta, key);
 				if (razor_score <= alpha) {
 					return razor_score;
@@ -311,14 +311,14 @@ namespace Search {
 			}
 			
 			if (!pv_node && !in_check_now && depth <= 8) {
-				const i32 rfp_margin = 88 * depth - 0 * improving;
+				const i32 rfp_margin = 91 * depth - 74 * improving;
 				if (eval - rfp_margin >= beta) {
 					return (eval + beta) / 2;
 				}
 			}
 			
 			if (!pv_node && !in_check_now && depth >= 3 && has_non_pawn_material(pos)) {
-				if (eval >= beta + 25) {
+				if (eval >= beta + 16) {
 					const i32 R = 4 + depth / 3;
 					
 					Position null_pos = pos;
@@ -353,7 +353,9 @@ namespace Search {
 			Move captures_tried[MAX_MOVES];
 			i32 captures_count = 0;
 			
-			const i32 lmp_threshold = improving ? 7 + depth * depth : 7 + depth * depth;
+			const i32 lmp_threshold = improving
+			? (1812 + depth * depth * 288) / 256
+			: (1793 + depth * depth * 245) / 256;
 			const bool can_lmp = !pv_node && !in_check_now && depth <= 5;
 			
 			const Move killer1 = (ply >= 0 && ply < MAX_PLY) ? killers.killers[ply][0] : NullMove;
@@ -393,12 +395,12 @@ namespace Search {
 				
 				if (is_quiet) {
 					const i32 hist_score = history.get_score(pos.flipped, moves[i].from, moves[i].to);
-					r_q += hist_score * 1024 / 8192;
+					r_q += hist_score * 1024 / 8076;
 					
-					if (pv_node)        r_q -= 1024;
-					if (improving)      r_q -= 512;
-					if (in_check_now)   r_q -= 512;
-					if (child_in_check) r_q -= 512;
+					if (pv_node)        r_q -= 1042;
+					if (improving)      r_q -= 797;
+					if (in_check_now)   r_q -= 666;
+					if (child_in_check) r_q -= 559;
 					if (moves[i] == killer1 || moves[i] == killer2) r_q -= 512;
 				} else {
 					r_q = static_cast<i32>(r_q * 0.6);
@@ -517,7 +519,7 @@ namespace Search {
 			info.pv[0] = best;
 			info.pv_length = best.is_none() ? 0 : 1;
 			
-			i32 delta     = 25;
+			i32 delta     = 24;
 			i32 alpha     = -INF;
 			i32 beta      = INF;
 			i32 asp_depth = depth;
