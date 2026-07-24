@@ -34,7 +34,7 @@ endif
 CXXFLAGS ?= $(CXXFLAGS_BASE)
 LDFLAGS ?= $(LDFLAGS_BASE)
 
-SRCS := main.cpp bitboard.cpp position.cpp movegen.cpp eval.cpp nnue.cpp tt.cpp search.cpp uci.cpp
+SRCS := main.cpp bitboard.cpp position.cpp movegen.cpp see.cpp eval.cpp nnue.cpp tt.cpp search.cpp uci.cpp
 OBJS := $(SRCS:.cpp=.o)
 
 ifneq ($(strip $(EVALFILE)),)

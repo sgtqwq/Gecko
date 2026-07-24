@@ -17,14 +17,15 @@ namespace {
 			}
 		}
 	}
+
 	template<PieceType PT>
 	void generate_piece_moves(const Position& pos, Move* movelist, i32& count, u64 to_mask) {
 		u64 pieces = pos.colour[0] & pos.pieces[PT];
-		u64 all = pos.all_pieces();
+		const u64 all = pos.all_pieces();
 		while (pieces) {
-			i32 from = BB::pop_lsb(pieces);
-			u64 attacks;
-			
+			const i32 from = BB::pop_lsb(pieces);
+			u64 attacks = 0;
+
 			if constexpr (PT == Knight) {
 				attacks = BB::knight_attacks(from);
 			} else if constexpr (PT == Bishop) {
@@ -36,60 +37,66 @@ namespace {
 			} else if constexpr (PT == King) {
 				attacks = BB::king_attacks(from);
 			}
-			
+
 			attacks &= to_mask;
-			
 			while (attacks) {
-				i32 to = BB::pop_lsb(attacks);
+				const i32 to = BB::pop_lsb(attacks);
 				movelist[count++] = Move(from, to, None);
 			}
 		}
 	}
-	
-} // anonymous namespace
+}
 
-i32 generate_moves(const Position& pos, Move* movelist, bool only_captures) {
+i32 generate_moves(const Position& pos, Move* movelist, MoveGenType type) {
 	i32 count = 0;
-	
-	u64 all = pos.all_pieces();
-	u64 us = pos.colour[0];
-	u64 them = pos.colour[1];
-	
-	u64 to_mask = only_captures ? them : ~us;
-	
-	u64 pawns = us & pos.pieces[Pawn];
-	
-	if (!only_captures) {
-		u64 push1 = BB::north(pawns) & ~all;
+
+	const u64 all = pos.all_pieces();
+	const u64 us = pos.colour[0];
+	const u64 them = pos.colour[1];
+	const u64 pawns = us & pos.pieces[Pawn];
+
+	const bool generate_noisy = type != MoveGenType::Quiet;
+	const bool generate_quiet = type != MoveGenType::Noisy;
+
+	if (generate_quiet) {
+		// Quiet generation excludes promotions: every promotion is tactical/noisy.
+		u64 push1 = BB::north(pawns) & ~all & ~BB::Rank8;
 		generate_pawn_moves(movelist, count, push1, -8);
-		
+
 		u64 push2 = BB::north(push1 & BB::Rank3) & ~all;
 		generate_pawn_moves(movelist, count, push2, -16);
 	}
-	
-	u64 capture_targets = them | pos.ep;
-	if (only_captures || capture_targets) {
+
+	if (generate_noisy) {
+		const u64 capture_targets = them | pos.ep;
 		u64 capture_nw = BB::north_west(pawns) & capture_targets;
 		u64 capture_ne = BB::north_east(pawns) & capture_targets;
 		generate_pawn_moves(movelist, count, capture_nw, -7);
 		generate_pawn_moves(movelist, count, capture_ne, -9);
-	}
-	
-	if (only_captures) {
+
+		// Non-capturing promotions belong to the noisy stage as well.
 		u64 promo_push = BB::north(pawns & BB::Rank7) & ~all;
 		generate_pawn_moves(movelist, count, promo_push, -8);
 	}
-	
-	generate_piece_moves<Knight>(pos, movelist, count, to_mask);
-	generate_piece_moves<Bishop>(pos, movelist, count, to_mask);
-	generate_piece_moves<Rook>(pos, movelist, count, to_mask);
-	generate_piece_moves<Queen>(pos, movelist, count, to_mask);
-	generate_piece_moves<King>(pos, movelist, count, to_mask);
-	
-	if (!only_captures) {
-		i32 king_sq = BB::lsb(us & pos.pieces[King]);
-		u64 rooks = us & pos.pieces[Rook];
-		
+
+	u64 piece_to_mask = 0;
+	if (type == MoveGenType::All)
+		piece_to_mask = ~us;
+	else if (type == MoveGenType::Noisy)
+		piece_to_mask = them;
+	else
+		piece_to_mask = ~all;
+
+	generate_piece_moves<Knight>(pos, movelist, count, piece_to_mask);
+	generate_piece_moves<Bishop>(pos, movelist, count, piece_to_mask);
+	generate_piece_moves<Rook>(pos, movelist, count, piece_to_mask);
+	generate_piece_moves<Queen>(pos, movelist, count, piece_to_mask);
+	generate_piece_moves<King>(pos, movelist, count, piece_to_mask);
+
+	if (generate_quiet) {
+		const i32 king_sq = BB::lsb(us & pos.pieces[King]);
+		const u64 rooks = us & pos.pieces[Rook];
+
 		if (pos.castling[0] && king_sq == E1) {
 			if ((rooks & BB::square_bb(H1)) &&
 				!(all & 0x60ULL) &&
@@ -99,7 +106,7 @@ i32 generate_moves(const Position& pos, Move* movelist, bool only_captures) {
 				movelist[count++] = Move(E1, G1, None);
 			}
 		}
-		
+
 		if (pos.castling[1] && king_sq == E1) {
 			if ((rooks & BB::square_bb(A1)) &&
 				!(all & 0x0EULL) &&
@@ -110,46 +117,39 @@ i32 generate_moves(const Position& pos, Move* movelist, bool only_captures) {
 			}
 		}
 	}
-	
+
 	return count;
 }
 
 u64 perft(Position& pos, i32 depth) {
 	if (depth == 0) return 1;
-	
+
 	Move movelist[256];
-	i32 num_moves = generate_moves(pos, movelist, false);
-	
+	const i32 num_moves = generate_moves(pos, movelist, MoveGenType::All);
 	u64 nodes = 0;
-	
+
 	for (i32 i = 0; i < num_moves; i++) {
 		Position new_pos = pos;
-		
-		if (new_pos.make_move(movelist[i])) {
+		if (new_pos.make_move(movelist[i]))
 			nodes += perft(new_pos, depth - 1);
-		}
 	}
-	
+
 	return nodes;
 }
 
 void perft_divide(Position& pos, i32 depth) {
 	Move movelist[256];
-	i32 num_moves = generate_moves(pos, movelist, false);
-	
+	const i32 num_moves = generate_moves(pos, movelist, MoveGenType::All);
 	u64 total = 0;
-	
+
 	for (i32 i = 0; i < num_moves; i++) {
 		Position new_pos = pos;
-		
 		if (new_pos.make_move(movelist[i])) {
-			u64 nodes = (depth > 1) ? perft(new_pos, depth - 1) : 1;
+			const u64 nodes = (depth > 1) ? perft(new_pos, depth - 1) : 1;
 			total += nodes;
-			
-			std::cout << move_to_string(movelist[i], pos.flipped) 
-			<< ": " << nodes << "\n";
+			std::cout << move_to_string(movelist[i], pos.flipped) << ": " << nodes << "\n";
 		}
 	}
-	
+
 	std::cout << "\nTotal: " << total << "\n";
 }
