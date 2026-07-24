@@ -182,6 +182,8 @@ namespace Search {
 			}
 		}
 		
+		const bool in_check_now = in_check(pos);
+		
 		const i32 raw_eval = entry && entry->has_static_eval()
 		? entry->static_eval
 		: Eval::evaluate(pos);
@@ -193,21 +195,23 @@ namespace Search {
 		if (entry && entry->has_score() && tt_score_can_correct_eval(*entry, tt_score, stand_pat))
 			stand_pat = tt_score;
 		
-		if (stand_pat >= beta) return stand_pat;
-		if (stand_pat > alpha) alpha = stand_pat;
+		if (!in_check_now) {
+			if (stand_pat >= beta) return stand_pat;
+			if (stand_pat > alpha) alpha = stand_pat;
+		}
 		
 		Move moves[MAX_MOVES];
-		const i32 count = generate_moves(pos, moves, true);
+		const i32 count = generate_moves(pos, moves, !in_check_now);
 		order_moves(pos, moves, count, ply, tt_move, pos.flipped);
 		
-		i32 best = stand_pat;
+		i32 best = in_check_now ? (-MATE_SCORE + ply) : stand_pat;
 		Move best_move = NullMove;
 		u8 flag = TT_ALPHA;
 		
 		for (i32 i = 0; i < count; ++i) {
 			if (stopped.load(std::memory_order_relaxed)) break;
 			
-			if (!SEE::ge(pos, moves[i], 0)) {
+			if (best > -MATE_SCORE + 1024 && !SEE::ge(pos, moves[i], 0)) {
 				continue;
 			}
 			
