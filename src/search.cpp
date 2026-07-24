@@ -2,6 +2,7 @@
 #include "movegen.h"
 #include "eval.h"
 #include "tt.h"
+#include "see.h"
 
 #include <iostream>
 #include <algorithm>
@@ -205,6 +206,10 @@ namespace Search {
 		
 		for (i32 i = 0; i < count; ++i) {
 			if (stopped.load(std::memory_order_relaxed)) break;
+			
+			if (!SEE::ge(pos, moves[i], 0)) {
+				continue;
+			}
 			
 			Position next = pos;
 			if (!next.make_move(moves[i])) continue;
