@@ -264,7 +264,7 @@ namespace Search {
 				tt_move = tt_entry->best_move();
 				if (tt_entry->has_score()) {
 					tt_score = score_from_tt(tt_entry->score, ply);
-					if (!root && tt_entry->depth >= depth) {
+					if (!pv_node && tt_entry->depth >= depth) {
 						if (tt_entry->flag == TT_EXACT) return tt_score;
 						if (tt_entry->flag == TT_ALPHA && tt_score <= alpha) return tt_score;
 						if (tt_entry->flag == TT_BETA  && tt_score >= beta)  return tt_score;
@@ -333,7 +333,6 @@ namespace Search {
 				}
 			}
 			
-			
 			Move moves[MAX_MOVES];
 			const i32 count = generate_moves(pos, moves, false);
 			order_moves(pos, moves, count, ply, tt_move, pos.flipped);
@@ -373,37 +372,26 @@ namespace Search {
 				}
 				
 				const i32 new_depth = depth - 1;
-				
 				i32 score = -INF;
 				
-				// Reduced depth zero-window search (LMR)
 				if (depth >= 2 && move_index >= 1 + 2 * root) {
 					const i32 r_idx = std::min(move_index, 255);
 					i32 r = reduction[r_idx][std::min(depth, MAX_PLY)];
-					if (!is_quiet) r = static_cast<i32>(r * 0.6);
+					if(!is_quiet) r *= 0.6;
 					const i32 searched_depth = std::clamp(new_depth - r, 1, new_depth);
 					
-					score = -negamax(next, info, searched_depth, ply + 1,
-						-alpha - 1, -alpha, false, child_key);
+					score = -negamax(next, info, searched_depth, ply + 1, -alpha - 1, -alpha, false, child_key);
 					
-					if (!stopped.load(std::memory_order_relaxed) &&
-						score > alpha && searched_depth < new_depth) {
-						score = -negamax(next, info, new_depth, ply + 1,
-							-alpha - 1, -alpha, false, child_key);
+					if (!stopped.load(std::memory_order_relaxed) && score > alpha && searched_depth < new_depth) {
+						score = -negamax(next, info, new_depth, ply + 1, -alpha - 1, -alpha, false, child_key);
 					}
 				}
-				// Full depth zero-window search
 				else if (!pv_node || move_index > 0) {
-					score = -negamax(next, info, new_depth, ply + 1,
-						-alpha - 1, -alpha, false, child_key);
+					score = -negamax(next, info, new_depth, ply + 1, -alpha - 1, -alpha, false, child_key);
 				}
 				
-				// Full depth full-window search (PV node first move, or
-				// PV node move that beat alpha in the zero-window search)
-				if (!stopped.load(std::memory_order_relaxed) &&
-					pv_node && (move_index == 0 || score > alpha)) {
-					score = -negamax(next, info, new_depth, ply + 1,
-						-beta, -alpha, true, child_key);
+				if (pv_node && (move_index == 0 || score > alpha)) {
+					score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, true, child_key);
 				}
 				
 				if (stopped.load(std::memory_order_relaxed)) break;
@@ -566,3 +554,4 @@ namespace Search {
 	}
 	
 } // namespace Search
+
