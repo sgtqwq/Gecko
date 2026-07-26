@@ -99,7 +99,7 @@ namespace Search {
 				else if (is_capture(pos, moves[i])) {
 					const PieceType attacker = pos.piece_on(moves[i].from);
 					const PieceType victim   = captured_piece_type(pos, moves[i]);
-					scores[i] = 150000 + mvv_lva_score(pos, moves[i]) * 100
+					scores[i] = 100000 + mvv_lva_score(pos, moves[i]) * 100
 					+ capture_history.get_score(stm_flipped, attacker, moves[i].to, victim) / 32 - 200000 * (!SEE::ge(pos, moves[i], 0));
 				}
 				else if (moves[i] == killer1) {
@@ -349,8 +349,12 @@ namespace Search {
 			
 			const i32 lmp_threshold = 7 + depth * depth;
 			const bool can_lmp = !pv_node && !in_check_now && depth <= 5;
-			
+			bool skip_quiet = 0;
 			for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {
+				
+				const bool is_cap   = is_capture(pos, moves[i]);
+				const bool is_quiet = !is_cap && moves[i].promo == None;
+				if(is_quiet && skip_quiet) continue;
 				Position next = pos;
 				if (!next.make_move(moves[i])) continue;
 				
@@ -365,11 +369,10 @@ namespace Search {
 					stopped.store(true, std::memory_order_relaxed);
 				}
 				
-				const bool is_cap   = is_capture(pos, moves[i]);
-				const bool is_quiet = !is_cap && moves[i].promo == None;
 				
 				if (can_lmp && is_quiet && move_index >= lmp_threshold) {
-					break;
+					skip_quiet = 1;
+					continue;
 				}
 				
 				const i32 new_depth = depth - 1;
