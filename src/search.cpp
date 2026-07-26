@@ -99,8 +99,8 @@ namespace Search {
 				else if (is_capture(pos, moves[i])) {
 					const PieceType attacker = pos.piece_on(moves[i].from);
 					const PieceType victim   = captured_piece_type(pos, moves[i]);
-					scores[i] = 100000 + mvv_lva_score(pos, moves[i]) * 100
-					+ capture_history.get_score(stm_flipped, attacker, moves[i].to, victim) / 32;
+					scores[i] = 150000 + mvv_lva_score(pos, moves[i]) * 100
+					+ capture_history.get_score(stm_flipped, attacker, moves[i].to, victim) / 32 - 200000 * (!SEE::ge(pos, moves[i], 0));
 				}
 				else if (moves[i] == killer1) {
 					scores[i] = 90000;
