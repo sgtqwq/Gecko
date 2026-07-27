@@ -360,7 +360,6 @@ namespace Search {
 			
 			const i32 lmp_threshold = 7 + depth * depth;
 			const bool can_lmp = !pv_node && !in_check_now && depth <= 5;
-			
 			const bool can_singular = !root
 			&& !singular
 			&& depth >= 8
