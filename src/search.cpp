@@ -166,6 +166,8 @@ namespace Search {
 		}
 		if (stopped.load(std::memory_order_relaxed)) return 0;
 		
+		const bool pv_node = (beta - alpha) > 1;
+		
 		if (ply >= MAX_PLY) return Eval::evaluate(pos);
 		
 		TTEntry* entry = tt.probe(key);
@@ -176,9 +178,11 @@ namespace Search {
 			tt_move = entry->best_move();
 			if (entry->has_score()) {
 				tt_score = score_from_tt(entry->score, ply);
-				if (entry->flag == TT_EXACT) return tt_score;
-				if (entry->flag == TT_ALPHA && tt_score <= alpha) return tt_score;
-				if (entry->flag == TT_BETA  && tt_score >= beta)  return tt_score;
+				if (!pv_node) {
+					if (entry->flag == TT_EXACT) return tt_score;
+					if (entry->flag == TT_ALPHA && tt_score <= alpha) return tt_score;
+					if (entry->flag == TT_BETA  && tt_score >= beta)  return tt_score;
+				}
 			}
 		}
 		
@@ -241,8 +245,10 @@ namespace Search {
 	}
 	
 	static i32 negamax(Position& pos, SearchInfo& info, i32 depth, i32 ply,
-		i32 alpha, i32 beta, bool pv_node, u64 key) {
-			const bool root = (ply == 0);
+		i32 alpha, i32 beta, bool cut_node, u64 key) {
+			const bool root    = (ply == 0);
+			const bool pv_node = (beta - alpha) > 1;
+			
 			info.seldepth = std::max(info.seldepth, ply);
 			
 			if (!root && is_repetition(key, ply)) return 0;
@@ -264,7 +270,7 @@ namespace Search {
 				tt_move = tt_entry->best_move();
 				if (tt_entry->has_score()) {
 					tt_score = score_from_tt(tt_entry->score, ply);
-					if (!root && tt_entry->depth >= depth) {
+					if (!pv_node && tt_entry->depth >= depth) {
 						if (tt_entry->flag == TT_EXACT) return tt_score;
 						if (tt_entry->flag == TT_ALPHA && tt_score <= alpha) return tt_score;
 						if (tt_entry->flag == TT_BETA  && tt_score >= beta)  return tt_score;
@@ -320,7 +326,7 @@ namespace Search {
 					tt.prefetch(null_key);
 					
 					const i32 null_score = -negamax(null_pos, info, depth - R, ply + 1,
-						-beta, -beta + 1, false, null_key);
+						-beta, -beta + 1, !cut_node, null_key);
 					
 					if (stopped.load(std::memory_order_relaxed)) return 0;
 					
@@ -332,7 +338,6 @@ namespace Search {
 					}
 				}
 			}
-			
 			
 			Move moves[MAX_MOVES];
 			const i32 count = generate_moves(pos, moves, false);
@@ -373,64 +378,77 @@ namespace Search {
 				}
 				
 				const i32 new_depth = depth - 1;
-				
-				const bool child_pv = pv_node && (move_index == 0);
-				
-				i32 score;
+				i32 score = -INF;
 				
 				if (depth >= 2 && move_index >= 1 + 2 * root) {
 					const i32 r_idx = std::min(move_index, 255);
 					i32 r = reduction[r_idx][std::min(depth, MAX_PLY)];
-					if(!is_quiet) r *= 0.6;
-					const i32 searched_depth = std::clamp(new_depth - r, 1, new_depth);
+					if (!is_quiet) r = r * 3 / 5;
+					const i32 lmr_depth = std::clamp(new_depth - r, 1, new_depth);
 					
-					score = -negamax(next, info, searched_depth, ply + 1, -beta, -alpha, false, child_key);
+					score = -negamax(next, info, lmr_depth, ply + 1,
+						-alpha - 1, -alpha, true, child_key);
 					
-					if (!stopped.load(std::memory_order_relaxed) && score > alpha && searched_depth < new_depth) {
-						score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, child_pv, child_key);
+					if (!stopped.load(std::memory_order_relaxed)
+						&& score > alpha && lmr_depth < new_depth) {
+						score = -negamax(next, info, new_depth, ply + 1,
+							-alpha - 1, -alpha, !cut_node, child_key);
 					}
 				}
-				else {
-					score = -negamax(next, info, new_depth, ply + 1, -beta, -alpha, child_pv, child_key);
+				else if (!pv_node || move_index > 0) {
+					score = -negamax(next, info, new_depth, ply + 1,
+						-alpha - 1, -alpha, !cut_node, child_key);
+				}
+				
+				if (!stopped.load(std::memory_order_relaxed)
+					&& pv_node && (move_index == 0 || score > alpha)) {
+					score = -negamax(next, info, new_depth, ply + 1,
+						-beta, -alpha, false, child_key);
 				}
 				
 				if (stopped.load(std::memory_order_relaxed)) break;
 				
 				if (score > best) {
 					best = score;
-					best_move = moves[i];
-					if (root) {
-						info.pv[0] = best_move;
-						info.pv_length = 1;
-					}
-				}
-				
-				if (best > alpha) {
-					alpha = best;
-					if (alpha >= beta) {
-						const i32 bonus = history_bonus(depth);
+					
+					if (score > alpha) {
+						alpha = score;
+						best_move = moves[i];
 						
-						if (is_quiet) {
-							history.update(pos.flipped, best_move.from, best_move.to, bonus);
-							killers.update(ply, best_move);
+						if (root) {
+							info.pv[0] = best_move;
+							info.pv_length = 1;
+						}
+						
+						if (alpha >= beta) {
+							const i32 bonus = history_bonus(depth);
 							
-							for (i32 j = 0; j < quiets_count; ++j) {
-								history.update(pos.flipped, quiets_tried[j].from, quiets_tried[j].to, -bonus);
+							if (is_quiet) {
+								history.update(pos.flipped, best_move.from, best_move.to, bonus);
+								killers.update(ply, best_move);
+								
+								for (i32 j = 0; j < quiets_count; ++j) {
+									history.update(pos.flipped, quiets_tried[j].from, quiets_tried[j].to, -bonus);
+								}
 							}
+							else if (is_cap) {
+								const PieceType attacker = pos.piece_on(best_move.from);
+								const PieceType victim   = captured_piece_type(pos, best_move);
+								capture_history.update(pos.flipped, attacker, best_move.to, victim, bonus);
+							}
+							
+							for (i32 j = 0; j < captures_count; ++j) {
+								const PieceType attacker_j = pos.piece_on(captures_tried[j].from);
+								const PieceType victim_j   = captured_piece_type(pos, captures_tried[j]);
+								capture_history.update(pos.flipped, attacker_j, captures_tried[j].to, victim_j, -bonus);
+							}
+							
+							break;
 						}
-						else if (is_cap) {
-							const PieceType attacker = pos.piece_on(best_move.from);
-							const PieceType victim   = captured_piece_type(pos, best_move);
-							capture_history.update(pos.flipped, attacker, best_move.to, victim, bonus);
-						}
-						
-						for (i32 j = 0; j < captures_count; ++j) {
-							const PieceType attacker_j = pos.piece_on(captures_tried[j].from);
-							const PieceType victim_j   = captured_piece_type(pos, captures_tried[j]);
-							capture_history.update(pos.flipped, attacker_j, captures_tried[j].to, victim_j, -bonus);
-						}
-						
-						break;
+					}
+					else if (root && move_index == 0) {
+						info.pv[0] = moves[i];
+						info.pv_length = 1;
 					}
 				}
 				
@@ -450,7 +468,8 @@ namespace Search {
 				u8 flag = TT_EXACT;
 				if (best <= alpha_orig) flag = TT_ALPHA;
 				else if (best >= beta) flag = TT_BETA;
-				tt.store(key, depth, score_to_tt(best, ply), raw_eval, flag, best_move);
+				const Move stored_move = !best_move.is_none() ? best_move : tt_move;
+				tt.store(key, depth, score_to_tt(best, ply), raw_eval, flag, stored_move);
 			}
 			
 			return best;
@@ -505,7 +524,7 @@ namespace Search {
 			
 			i32 score;
 			while (true) {
-				score = negamax(pos, info, std::max(asp_depth, 1), 0, alpha, beta, true, root_hash);
+				score = negamax(pos, info, std::max(asp_depth, 1), 0, alpha, beta, false, root_hash);
 				
 				if (stopped.load(std::memory_order_relaxed)) break;
 				
@@ -530,7 +549,7 @@ namespace Search {
 					break;
 				}
 				
-				delta += delta * 0.2;
+				delta += delta / 5;
 			}
 			
 			if (stopped.load(std::memory_order_relaxed)) break;
