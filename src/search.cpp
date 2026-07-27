@@ -16,6 +16,7 @@ namespace Search {
 	HistoryTable history;
 	KillerTable killers;
 	CaptureHistoryTable capture_history;
+	i32 eval_stack[MAX_PLY + 4];
 	
 	i32 reduction[256][MAX_PLY + 1]{};
 	
@@ -85,6 +86,18 @@ namespace Search {
 				pos.pieces[Rook]   | pos.pieces[Queen])) != 0;
 	}
 	
+	static inline bool compute_improving(i32 ply, bool in_check_now, i32 eval) {
+		if (in_check_now) return false;
+		
+		if (ply >= 2 && eval_stack[ply - 2] != VALUE_NONE)
+			return eval > eval_stack[ply - 2];
+		
+		if (ply >= 4 && eval_stack[ply - 4] != VALUE_NONE)
+			return eval > eval_stack[ply - 4];
+		
+		return true;
+	}
+	
 	static void order_moves(const Position& pos, Move* moves, i32 count, i32 ply,
 		Move tt_move = NullMove, bool stm_flipped = false) {
 			i32 scores[MAX_MOVES];
@@ -132,6 +145,7 @@ namespace Search {
 		history.clear();
 		killers.clear();
 		capture_history.clear();
+		std::fill(std::begin(eval_stack), std::end(eval_stack), VALUE_NONE);
 		init_lmr();
 	}
 	
@@ -299,6 +313,11 @@ namespace Search {
 				}
 			}
 			
+			if (ply >= 0 && ply < MAX_PLY + 4)
+				eval_stack[ply] = in_check_now ? VALUE_NONE : eval;
+			const bool improving = compute_improving(ply, in_check_now, eval);
+			(void)improving;
+			
 			if (!pv_node
 				&& !in_check_now
 				&& depth <= 7
@@ -352,7 +371,7 @@ namespace Search {
 			Move captures_tried[MAX_MOVES];
 			i32 captures_count = 0;
 			
-			const i32 lmp_threshold = 7 + depth * depth;
+			const i32 lmp_threshold = (7 + depth * depth) / (2 - improving);
 			const bool can_lmp = !pv_node && !in_check_now && depth <= 5;
 			
 			for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {

@@ -12,6 +12,7 @@ constexpr i32 INF = 30000;
 constexpr i32 MATE_SCORE = 29000;
 constexpr i32 MAX_PLY = 256;
 constexpr i32 MAX_MOVES = 256;
+constexpr i32 VALUE_NONE = 32002;
 
 constexpr i32 HISTORY_MAX = 16384;
 constexpr i32 HISTORY_BONUS_MAX = 2000;
@@ -134,6 +135,7 @@ namespace Search {
 	extern HistoryTable history;
 	extern KillerTable killers;
 	extern CaptureHistoryTable capture_history;
+	extern i32 eval_stack[MAX_PLY + 4];
 	
 	void init();
 	void clear_tables();
