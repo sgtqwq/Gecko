@@ -395,6 +395,10 @@ namespace Search {
 						if (!pv_node && se_score < singular_beta - 70 && is_quiet) new_depth += 1;
 					} else if (se_score >= beta) {
 						return se_score;
+					} else if(tt_score >= beta) {
+						new_depth -= 3;
+					}else if(cut_node) {
+						new_depth -= 2;
 					}
 				}
 				
