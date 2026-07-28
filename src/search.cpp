@@ -318,7 +318,7 @@ namespace Search {
 			}
 			
 			if (!pv_node && !in_check_now && excluded.is_none() && depth >= 3 && has_non_pawn_material(pos)) {
-				if (eval >= beta + 25) {
+				if (eval >= beta) {
 					const i32 R = 4 + depth / 3;
 					
 					Position null_pos = pos;
