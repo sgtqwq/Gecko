@@ -245,7 +245,7 @@ namespace Search {
 	}
 	
 	static i32 negamax(Position& pos, SearchInfo& info, i32 depth, i32 ply,
-		i32 alpha, i32 beta, bool cut_node, u64 key) {
+		i32 alpha, i32 beta, bool cut_node, u64 key, Move excluded = NullMove) {
 			const bool root    = (ply == 0);
 			const bool pv_node = (beta - alpha) > 1;
 			
@@ -270,7 +270,7 @@ namespace Search {
 				tt_move = tt_entry->best_move();
 				if (tt_entry->has_score()) {
 					tt_score = score_from_tt(tt_entry->score, ply);
-					if (!pv_node && tt_entry->depth >= depth) {
+					if (!pv_node && tt_entry->depth >= depth && excluded.is_none()) {
 						if (tt_entry->flag == TT_EXACT) return tt_score;
 						if (tt_entry->flag == TT_ALPHA && tt_score <= alpha) return tt_score;
 						if (tt_entry->flag == TT_BETA  && tt_score >= beta)  return tt_score;
@@ -301,6 +301,7 @@ namespace Search {
 			
 			if (!pv_node
 				&& !in_check_now
+				&& excluded.is_none()
 				&& depth <= 7
 				&& eval + 320 * depth < alpha) {
 				const i32 razor_score = quiescence(pos, info, ply, alpha, beta, key);
@@ -309,14 +310,14 @@ namespace Search {
 				}
 			}
 			
-			if (!pv_node && !in_check_now && depth <= 8) {
+			if (!pv_node && !in_check_now && excluded.is_none() && depth <= 8) {
 				const i32 rfp_margin = 88 * depth;
 				if (eval - rfp_margin >= beta) {
 					return (eval + beta) / 2;
 				}
 			}
 			
-			if (!pv_node && !in_check_now && depth >= 3 && has_non_pawn_material(pos)) {
+			if (!pv_node && !in_check_now && excluded.is_none() && depth >= 3 && has_non_pawn_material(pos)) {
 				if (eval >= beta + 25) {
 					const i32 R = 4 + depth / 3;
 					
@@ -356,6 +357,8 @@ namespace Search {
 			const bool can_lmp = !pv_node && !in_check_now && depth <= 5;
 			
 			for (i32 i = 0; i < count && !stopped.load(std::memory_order_relaxed); ++i) {
+				if (moves[i] == excluded) continue;
+				
 				Position next = pos;
 				if (!next.make_move(moves[i])) continue;
 				
@@ -377,7 +380,24 @@ namespace Search {
 					break;
 				}
 				
-				const i32 new_depth = depth - 1;
+				i32 new_depth = depth - 1;
+				
+				if (ply > 0 && depth > 3 && excluded.is_none() && moves[i] == tt_move &&
+					tt_entry && tt_entry->depth >= depth - 4 && tt_entry->flag != TT_ALPHA &&
+					std::abs(tt_score) < MATE_SCORE - MAX_PLY) {
+					
+					i32 singular_beta = tt_score - depth;
+					i32 se_score = negamax(pos, info, new_depth / 2, ply, singular_beta - 1, singular_beta, false, key, moves[i]);
+					
+					if (se_score < singular_beta) {
+						new_depth += 1;
+						if (!pv_node && se_score < singular_beta - 20) new_depth += 1;
+						if (!pv_node && se_score < singular_beta - 70 && is_quiet) new_depth += 1;
+					} else if (se_score >= beta) {
+						return se_score;
+					}
+				}
+				
 				i32 score = -INF;
 				
 				if (depth >= 2 && move_index >= 1 + 2 * root) {
@@ -461,10 +481,10 @@ namespace Search {
 			}
 			
 			if (legal == 0) {
-				return in_check_now ? -MATE_SCORE + ply : 0;
+				return excluded.is_none() ? (in_check_now ? -MATE_SCORE + ply : 0) : alpha;
 			}
 			
-			if (!stopped.load(std::memory_order_relaxed)) {
+			if (!stopped.load(std::memory_order_relaxed) && excluded.is_none()) {
 				u8 flag = TT_EXACT;
 				if (best <= alpha_orig) flag = TT_ALPHA;
 				else if (best >= beta) flag = TT_BETA;
